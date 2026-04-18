@@ -1,0 +1,37 @@
+ToroidZip
+=========
+
+A ratio-first compression codec for smooth floating-point data.
+
+Encodes float64 sequences as ratios (x[n] / x[n-1]) rather than absolute
+values. Ratio distributions in smooth data are tightly clustered around 1.0
+(the Identity state), yielding a better entropy model than value-based codecs.
+Boundary events (near-zero or extreme ratios) are handled as a separate class
+rather than disrupting the main distribution.
+
+Theoretical basis: Toroidal Arithmetic / Global Arithmetic framework.
+See: notes/Toroidal Arithmetic Project/summary
+
+Status: Milestone 1 (round-trip encoding, no entropy coder yet).
+
+Usage
+-----
+
+  go install github.com/dbrjo/toroidzip/cmd/toroidzip@latest
+
+  toroidzip encode input.f64 output.tzrz
+  toroidzip decode input.tzrz output.f64
+
+Input/output: raw IEEE 754 little-endian float64 binary files.
+
+Structure
+---------
+
+  codec/          core encode/decode logic and boundary classification
+  cmd/toroidzip/  CLI binary
+  PLAN            project roadmap and algorithm design
+
+License
+-------
+
+Apache 2.0
