@@ -1,22 +1,24 @@
+version: "2"
+
 run:
   go: '1.24'
 
 linters:
-  # Start from the default set and add staticcheck explicitly.
-  # Default set: errcheck, gosimple, govet, ineffassign, staticcheck, unused.
+  # Default set: errcheck, govet, ineffassign, staticcheck, unused.
+  # gosimple is merged into staticcheck in v2.
   enable:
     - govet
     - staticcheck
-    - gosimple
     - ineffassign
     - unused
     - errcheck
+  exclusions:
+    rules:
+      # Exclude errcheck on defer Close() — standard Go pattern.
+      - linters: [errcheck]
+        text: "Error return value of .*(Close|Flush).*is not checked"
 
 issues:
   # Show all issues, not just the first 3 per linter.
   max-issues-per-linter: 0
   max-same-issues: 0
-  # Exclude errcheck on defer Close() — standard Go pattern.
-  exclude-rules:
-    - linters: [errcheck]
-      text: "Error return value of .*(Close|Flush).*is not checked"
