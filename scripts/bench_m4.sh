@@ -15,6 +15,7 @@
 # Flags:
 #   --n N          number of float64 values per dataset (default 50000)
 #   --sig-figs N   test only this precision (default: test 3, 6, and 9 sig figs)
+#   --effort fast|best  lossless codec effort: fast=low level, best=max level (default: both)
 #   --keep         keep the bench_data/ temp directory after the run
 
 set -euo pipefail
@@ -23,15 +24,25 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 N=50000
 KEEP=0
 PRECISIONS=(3 6 9)
+EFFORT=both   # fast | best | both
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --n) N="$2"; shift 2 ;;
     --sig-figs) PRECISIONS=("$2"); shift 2 ;;
+    --effort) EFFORT="$2"; shift 2 ;;
     --keep) KEEP=1; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
 done
+
+# Resolve lossless levels from --effort
+case "$EFFORT" in
+  fast) ZSTD_LEVELS=(3);  BROTLI_QUALS=(6)  ;;
+  best) ZSTD_LEVELS=(19); BROTLI_QUALS=(11) ;;
+  both) ZSTD_LEVELS=(3 19); BROTLI_QUALS=(6 11) ;;
+  *) echo "--effort must be fast, best, or both (got '$EFFORT')" >&2; exit 1 ;;
+esac
 
 BENCH_DIR="$REPO_ROOT/bench_data"
 UNCOMPRESSED_BYTES=$(( N * 8 ))
@@ -108,9 +119,9 @@ echo ""
 
 HAS_ZSTD=0; HAS_BROTLI=0; HAS_FPZIP=0
 
-require_tool zstd   "choco install zstd  |  brew install zstd  |  apt install zstd"    && HAS_ZSTD=1   || true
+require_tool zstd   "brew install zstd | apt install zstd | Windows: download zstd.exe from https://github.com/facebook/zstd/releases and place on PATH"    && HAS_ZSTD=1   || true
 require_tool brotli "choco install brotli | brew install brotli | apt install brotli"  && HAS_BROTLI=1 || true
-require_tool fpzip  "build from https://github.com/LLNL/fpzip (no package available)"  && HAS_FPZIP=1  || true
+require_tool fpzip  "no binary release; build from source: https://github.com/LLNL/fpzip (requires cmake + C++ compiler)"  && HAS_FPZIP=1  || true
 
 echo ""
 
@@ -158,9 +169,9 @@ for ds in "${DATASETS[@]}"; do
     print_row "$ds" "toroidzip" "Q-${sf}sf/Reanchor" "$enc" "$ms"
   done
 
-  # zstd level 3 (default) and level 19 (max)
+  # zstd
   if [[ $HAS_ZSTD -eq 1 ]]; then
-    for lvl in 3 19; do
+    for lvl in "${ZSTD_LEVELS[@]}"; do
       zst_out="$BENCH_DIR/${ds}.zst${lvl}"
       ms=$(time_compress "zstd -q -$lvl --force $f -o $zst_out" "$zst_out")
       enc=$(file_bytes "$zst_out")
@@ -168,9 +179,9 @@ for ds in "${DATASETS[@]}"; do
     done
   fi
 
-  # brotli quality 6 (fast) and 11 (max)
+  # brotli
   if [[ $HAS_BROTLI -eq 1 ]]; then
-    for q in 6 11; do
+    for q in "${BROTLI_QUALS[@]}"; do
       br_out="$BENCH_DIR/${ds}.br${q}"
       ms=$(time_compress "brotli -q $q --force -o $br_out $f" "$br_out")
       enc=$(file_bytes "$br_out")
@@ -209,14 +220,12 @@ if [[ $HAS_ANY_LOSSLESS -eq 1 ]]; then
   printf "|%s|%s|%s|%s|\n" "---------------:" "---------------:" "-------------:" "----------:"
   for ds in "${DATASETS[@]}"; do
     declare -A ll_sizes
-    [[ $HAS_ZSTD   -eq 1 ]] && {
-      ll_sizes["zstd:level 3"]=$(file_bytes "$BENCH_DIR/${ds}.zst3")
-      ll_sizes["zstd:level 19"]=$(file_bytes "$BENCH_DIR/${ds}.zst19")
-    }
-    [[ $HAS_BROTLI -eq 1 ]] && {
-      ll_sizes["brotli:q=6"]=$(file_bytes "$BENCH_DIR/${ds}.br6")
-      ll_sizes["brotli:q=11"]=$(file_bytes "$BENCH_DIR/${ds}.br11")
-    }
+    [[ $HAS_ZSTD   -eq 1 ]] && for lvl in "${ZSTD_LEVELS[@]}"; do
+      ll_sizes["zstd:level $lvl"]=$(file_bytes "$BENCH_DIR/${ds}.zst${lvl}")
+    done
+    [[ $HAS_BROTLI -eq 1 ]] && for q in "${BROTLI_QUALS[@]}"; do
+      ll_sizes["brotli:q=$q"]=$(file_bytes "$BENCH_DIR/${ds}.br${q}")
+    done
     [[ $HAS_FPZIP  -eq 1 ]] && { ll_sizes["fpzip:lossless"]=$(file_bytes "$BENCH_DIR/${ds}.fpz"); }
     best_codec=""; best_level=""; best_bytes=$UNCOMPRESSED_BYTES
     for key in "${!ll_sizes[@]}"; do
@@ -247,15 +256,13 @@ for sf in "${PRECISIONS[@]}"; do
     tz_r=$(ratio "$tz_bytes")
     if [[ $HAS_ANY_LOSSLESS -eq 1 ]]; then
       declare -A ll2
-      [[ $HAS_ZSTD   -eq 1 ]] && {
-        ll2["a"]=$(file_bytes "$BENCH_DIR/${ds}.zst3")
-        ll2["b"]=$(file_bytes "$BENCH_DIR/${ds}.zst19")
-      }
-      [[ $HAS_BROTLI -eq 1 ]] && {
-        ll2["c"]=$(file_bytes "$BENCH_DIR/${ds}.br6")
-        ll2["d"]=$(file_bytes "$BENCH_DIR/${ds}.br11")
-      }
-      [[ $HAS_FPZIP  -eq 1 ]] && { ll2["e"]=$(file_bytes "$BENCH_DIR/${ds}.fpz"); }
+      [[ $HAS_ZSTD   -eq 1 ]] && for lvl in "${ZSTD_LEVELS[@]}"; do
+        ll2["zstd${lvl}"]=$(file_bytes "$BENCH_DIR/${ds}.zst${lvl}")
+      done
+      [[ $HAS_BROTLI -eq 1 ]] && for q in "${BROTLI_QUALS[@]}"; do
+        ll2["br${q}"]=$(file_bytes "$BENCH_DIR/${ds}.br${q}")
+      done
+      [[ $HAS_FPZIP  -eq 1 ]] && { ll2["fpzip"]=$(file_bytes "$BENCH_DIR/${ds}.fpz"); }
       best_ll=$UNCOMPRESSED_BYTES
       for key in "${!ll2[@]}"; do
         b="${ll2[$key]}"; [[ "$b" -lt "$best_ll" ]] && best_ll="$b"
@@ -269,6 +276,74 @@ for sf in "${PRECISIONS[@]}"; do
   done
   echo ""
 done
+
+# ── overall ranking ───────────────────────────────────────────────────────────
+# Rank every (codec, level) pair by average ratio across all datasets.
+# TZ rows are labeled lossy; lossless rows labeled lossless.
+
+echo "### Overall ranking (average ratio across all datasets, lower is better)"
+echo ""
+echo "Note: TZ rows are lossy; lossless rows preserve all data. Not a fair"
+echo "head-to-head, but useful to see where each setting lands on the ratio axis."
+echo ""
+printf "| %4s | %-18s | %-12s | %-8s | %12s |\n" "Rank" "Codec" "Level/Mode" "Type" "Avg ratio"
+printf "|%s|%s|%s|%s|%s|\n" "-----:" "-------------------:" "-------------:" "---------:" "-------------:"
+
+# Collect all (tag, label, type, total_bytes) entries
+declare -A rank_total rank_label rank_type
+
+for ds in "${DATASETS[@]}"; do
+  for sf in "${PRECISIONS[@]}"; do
+    tag="tz_q${sf}"
+    rank_label["$tag"]="toroidzip"
+    rank_type["$tag"]="lossy"
+    rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.q${sf}.tzrz") ))
+  done
+  [[ $HAS_ZSTD -eq 1 ]] && for lvl in "${ZSTD_LEVELS[@]}"; do
+    tag="zstd_${lvl}"
+    rank_label["$tag"]="zstd"
+    rank_type["$tag"]="lossless"
+    rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.zst${lvl}") ))
+  done
+  [[ $HAS_BROTLI -eq 1 ]] && for q in "${BROTLI_QUALS[@]}"; do
+    tag="brotli_${q}"
+    rank_label["$tag"]="brotli"
+    rank_type["$tag"]="lossless"
+    rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.br${q}") ))
+  done
+  [[ $HAS_FPZIP -eq 1 ]] && {
+    rank_label["fpzip"]="fpzip"
+    rank_type["fpzip"]="lossless"
+    rank_total["fpzip"]=$(( ${rank_total["fpzip"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.fpz") ))
+  }
+done
+
+TOTAL_UNCOMPRESSED=$(( ${#DATASETS[@]} * UNCOMPRESSED_BYTES ))
+
+# Sort by total bytes, print ranked
+rank=1
+while IFS= read -r line; do
+  total="${line%%:*}"
+  tag="${line##*:}"
+  codec="${rank_label[$tag]}"
+  level_tag="${tag#*_}"
+  case "$tag" in
+    tz_q*)    level="Q-${level_tag#q}sf/Reanchor" ;;
+    zstd_*)   level="level ${level_tag}" ;;
+    brotli_*) level="q=${level_tag}" ;;
+    fpzip)    level="lossless" ;;
+    *)        level="$level_tag" ;;
+  esac
+  typ="${rank_type[$tag]}"
+  avg=$(awk "BEGIN { printf \"%.4f\", $total / $TOTAL_UNCOMPRESSED }")
+  printf "| %4d | %-18s | %-12s | %-8s | %12s |\n" "$rank" "$codec" "$level" "$typ" "$avg"
+  (( rank++ ))
+done < <(
+  for tag in "${!rank_total[@]}"; do
+    echo "${rank_total[$tag]}:${tag}"
+  done | sort -t: -k1 -n
+)
+unset rank_total rank_label rank_type
 
 echo ""
 
