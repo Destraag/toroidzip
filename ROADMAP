@@ -155,8 +155,30 @@ Tasks:
 Goal: verify M5 gains empirically; clean up the codebase; address any
 improvements surfaced before formalizing.
 
-- [ ] 6a: Run TestM3Harness — record adaptive vs lossless vs quantized across
+- [x] 6a: Run TestM3Harness — record adaptive vs lossless vs quantized across
           all 6 datasets; capture ratio + maxErr here
+
+  Results (n=50000, HEAD f2e7f87, windows/amd64):
+
+  Smooth datasets (Sensor, MultiScale, Volatile, NearConstant):
+    Adaptive ε=1e-04/Reanchor  ratio 0.2537  = Q-3sf/10b  (at this ε, all smooth
+    Adaptive ε=1e-03/Reanchor  ratio 0.2537    ratios pass the quantize test
+                                                — no float64 fallbacks needed)
+  Financial:
+    Adaptive ε=1e-04/Reanchor  ratio 0.8733  = Q-3sf/10b  (log-normal walk:
+    Adaptive ε=1e-03/Reanchor  ratio 0.8733    incompressible regardless of ε)
+  NeuralWeight (Gaussian mixture ±0.01/±0.1):
+    Adaptive ε=1e-04/Reanchor  ratio 0.3641  > Q-3sf 0.2549  (+43%)
+    Adaptive ε=1e-03/Reanchor  ratio 0.3641    ratios spanning layer centres
+                                                exceed ε → exact float64 fallback
+
+  Best Q-3sf MaxErr (value-level): 2.711e-03 on smooth; 1.303e+02 on NeuralWeight
+  Adaptive MaxErr: not in best-ratio summary (Q-3sf wins by ratio on all datasets)
+  Action: add MaxErr column to detailed table so adaptive MaxErr is visible (6c)
+
+  Lossless ratio ~1.0007 on all smooth datasets — known; IdentityEpsilon too tight
+  DriftReanchor ~3.4× faster than DriftCompensate; identical output — confirmed
+  Stale harness note "not yet implemented (M5)" removed — committed this run
 - [ ] 6b: pprof profile — adaptive encode on Sensor n=50000; report hot paths
 - [ ] 6c: Full code review — correctness, naming, edge cases, API clarity
 - [ ] 6d: External comparison (bench_m4.sh) with v4 adaptive included;

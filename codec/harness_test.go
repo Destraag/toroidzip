@@ -232,8 +232,7 @@ func TestM3Harness(t *testing.T) {
 		n, rawFloat64Bytes/1024)
 	fmt.Printf("Axes: EntropyMode × DriftMode × PrecisionBits.\n")
 	fmt.Printf("Ratio = encoded_bytes / uncompressed_bytes (lower is better).\n")
-	fmt.Printf("Tier = quantized payload width (u8/u16/u32). `-` = not quantized.\n")
-	fmt.Printf("Note: EntropyAdaptive/Hybrid not yet implemented (M5).\n\n")
+	fmt.Printf("Tier = quantized payload width (u8/u16/u32). `-` = not quantized.\n\n")
 
 	fmt.Printf("| %-22s | %-22s | %8s | %9s | %11s | %10s | %10s |\n",
 		"Dataset", "Mode", "Tier", "Ratio", "Enc bytes", "Enc MB/s", "Dec MB/s")
