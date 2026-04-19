@@ -52,15 +52,17 @@ func runEncode(args []string) error {
 	driftModeStr := fs.String("drift-mode", "B",
 		"error-management strategy: A=reanchor, B=compensate (default), C=quantize")
 	entropyModeStr := fs.String("entropy-mode", "lossless",
-		"entropy mode: raw, lossless (default), or quantized")
+		"entropy mode: raw, lossless (default), quantized, or adaptive")
 	sigFigs := fs.Int("sig-figs", 0,
 		"significant figures to preserve (1-9); implies --entropy-mode quantized")
 	precBits := fs.Int("precision", 0,
-		"precision bits (1-30); implies --entropy-mode quantized; cannot combine with --sig-figs")
+		"precision bits (1-16 for adaptive, 1-30 for quantized); cannot combine with --sig-figs")
+	tolerance := fs.Float64("tolerance", 0.0,
+		"max relative quantization error for adaptive mode (0=lossless-equivalent, e.g. 1e-4)")
 	auto := fs.Bool("auto", false,
 		"auto-select encoding parameters from data analysis")
 	lossy := fs.Bool("lossy", false,
-		"with --auto: use quantized (lossy) encoding at recommended precision")
+		"with --auto: use adaptive encoding at recommended precision and tolerance 1e-4")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,6 +73,9 @@ func runEncode(args []string) error {
 	}
 	if *sigFigs > 0 && *precBits > 0 {
 		return fmt.Errorf("--sig-figs and --precision cannot both be set")
+	}
+	if *tolerance != 0 && strings.ToLower(*entropyModeStr) != "adaptive" {
+		return fmt.Errorf("--tolerance only applies to --entropy-mode adaptive")
 	}
 
 	if fs.NArg() < 2 {
@@ -102,17 +107,28 @@ func runEncode(args []string) error {
 		entropyMode = codec.EntropyLossless
 	case "quantized":
 		entropyMode = codec.EntropyQuantized
+	case "adaptive":
+		entropyMode = codec.EntropyAdaptive
 	default:
-		return fmt.Errorf("--entropy-mode must be raw, lossless, or quantized (got %q)", *entropyModeStr)
+		return fmt.Errorf("--entropy-mode must be raw, lossless, quantized, or adaptive (got %q)", *entropyModeStr)
 	}
 
-	// --sig-figs / --precision imply quantized mode.
+	// --sig-figs / --precision imply quantized mode (or set precision for adaptive).
 	precisionBits := 0
 	if *sigFigs > 0 {
-		entropyMode = codec.EntropyQuantized
-		precisionBits = codec.SigFigsToBits(*sigFigs)
+		if entropyMode == codec.EntropyAdaptive {
+			precisionBits = codec.SigFigsToBits(*sigFigs)
+			if precisionBits > 16 {
+				precisionBits = 16 // adaptive always uses uint16 symbols
+			}
+		} else {
+			entropyMode = codec.EntropyQuantized
+			precisionBits = codec.SigFigsToBits(*sigFigs)
+		}
 	} else if *precBits > 0 {
-		entropyMode = codec.EntropyQuantized
+		if entropyMode != codec.EntropyAdaptive {
+			entropyMode = codec.EntropyQuantized
+		}
 		precisionBits = *precBits
 	}
 
@@ -124,13 +140,19 @@ func runEncode(args []string) error {
 		*reanchorInterval = driftRpt.RecommendedInterval
 		if *lossy {
 			precRpt := codec.AnalyzePrecision(codec.ExtractNormalRatios(values, driftMode, *reanchorInterval))
-			entropyMode = codec.EntropyQuantized
+			entropyMode = codec.EntropyAdaptive
 			precisionBits = precRpt.RecommendedBits
+			if precisionBits > 16 {
+				precisionBits = 16
+			}
+			if *tolerance == 0 {
+				*tolerance = 1e-4 // sensible default for --auto --lossy
+			}
 		} else {
 			entropyMode = codec.EntropyLossless
 		}
-		fmt.Printf("auto: drift-mode=%v reanchor-interval=%d entropy-mode=%v precision-bits=%d\n",
-			driftMode, *reanchorInterval, entropyMode, precisionBits)
+		fmt.Printf("auto: drift-mode=%v reanchor-interval=%d entropy-mode=%v precision-bits=%d tolerance=%g\n",
+			driftMode, *reanchorInterval, entropyMode, precisionBits, *tolerance)
 	}
 
 	out, err := os.Create(fs.Arg(1))
@@ -144,6 +166,7 @@ func runEncode(args []string) error {
 		DriftMode:        driftMode,
 		EntropyMode:      entropyMode,
 		PrecisionBits:    precisionBits,
+		Tolerance:        *tolerance,
 	}
 	if err := codec.Encode(values, out, opts); err != nil {
 		return fmt.Errorf("encoding: %w", err)
@@ -268,15 +291,20 @@ Usage:
   toroidzip analyze <input.f64>
 
 Encode flags:
-  --entropy-mode raw|lossless|quantized
+  --entropy-mode raw|lossless|quantized|adaptive
                           entropy mode (default lossless)
   --drift-mode A|B|C      error-management strategy (default B)
                           A = reanchor: periodic verbatim anchors
                           B = compensate: Kahan log-space (default)
                           C = quantize: ratios rounded to float32
   --reanchor-interval N   verbatim anchor every N values (default 256)
-  --sig-figs N            significant figures 1-9; implies --entropy-mode quantized
-  --precision B           precision bits 1-30; implies --entropy-mode quantized
+  --sig-figs N            significant figures 1-9; implies quantized (or sets
+                          adaptive precision, capped at 16 bits)
+  --precision B           precision bits; 1-30 for quantized, 1-16 for adaptive
+  --tolerance T           max relative quantisation error for adaptive mode
+                          (0 = lossless-equivalent; e.g. 1e-4 for ~4 sig figs)
+                          only valid with --entropy-mode adaptive
   --auto                  auto-select parameters from data analysis
-  --lossy                 with --auto: use quantized encoding at recommended precision`)
+  --lossy                 with --auto: use adaptive encoding at recommended
+                          precision and tolerance 1e-4`)
 }
