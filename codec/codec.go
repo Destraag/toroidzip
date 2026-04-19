@@ -3,14 +3,14 @@
 // Encoding overview:
 //  1. Write a verbatim anchor value (float64).
 //  2. For each subsequent value, compute the ratio r[n] = x[n] / x[n-1].
-//  3. Classify the ratio (identity, normal, pole-zero, pole-inf).
-//  4. Write the ratio stream. Pole events are written to a sidecar.
+//  3. Classify the ratio (identity, normal, boundary-zero, boundary-inf).
+//  4. Write the ratio stream. Boundary events are stored verbatim inline.
 //  5. Every K values, write a new verbatim anchor to bound drift.
 //
 // Decoding overview:
 //  1. Read anchor.
 //  2. Reconstruct x[n] = x[n-1] * r[n] for all n.
-//  3. Inject pole events at their recorded positions.
+//  3. Inject boundary events at their recorded positions.
 package codec
 
 import (
@@ -116,7 +116,7 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 
 		// Advance prev according to mode.
 		switch {
-		case class == ClassPoleZero || class == ClassPoleInf:
+		case class == ClassBoundaryZero || class == ClassBoundaryInf:
 			// Verbatim event: reset prev to the actual value.
 			prev = values[i]
 			if driftMode == DriftCompensate {
@@ -198,7 +198,7 @@ func Decode(r io.Reader) ([]float64, error) {
 
 		class := RatioClass(classByte)
 		if class == ClassReanchor || IsBoundary(class) {
-			// Verbatim value: re-anchor or pole event stores the raw value directly.
+			// Verbatim value: re-anchor or boundary event stores the raw value directly.
 			values[i] = val
 			if driftMode == DriftCompensate {
 				kp = newKahanProd(val)
@@ -243,10 +243,10 @@ func (k *kahanProd) multiply(ratio float64) float64 {
 }
 
 // computeRatio returns the ratio r = current/prev and its class.
-// Handles the case where prev is zero or the ratio is out of normal bounds.
+// Handles the case where prev is zero, near-zero, infinite, or NaN.
 func computeRatio(current, prev float64) (float64, RatioClass) {
-	if prev == 0 || math.IsInf(prev, 0) || math.IsNaN(prev) {
-		return current, ClassPoleZero
+	if math.Abs(prev) < BoundaryZeroThreshold || math.IsInf(prev, 0) || math.IsNaN(prev) {
+		return current, ClassBoundaryZero
 	}
 	ratio := current / prev
 	return ratio, Classify(ratio)

@@ -61,7 +61,7 @@ func TestRoundTripWithReanchor(t *testing.T) {
 	}
 }
 
-// TestRoundTripWithZero verifies pole-zero events are handled correctly.
+// TestRoundTripWithZero verifies boundary-zero events are handled correctly.
 func TestRoundTripWithZero(t *testing.T) {
 	values := []float64{1.0, 2.0, 0.0, 3.0, 4.0}
 	got := roundTrip(t, values, codec.EncodeOptions{})
@@ -137,11 +137,11 @@ func TestClassify(t *testing.T) {
 		input float64
 		want  codec.RatioClass
 	}{
-		{"NaN", math.NaN(), codec.ClassPoleInf},
-		{"+Inf", math.Inf(1), codec.ClassPoleInf},
-		{"-Inf", math.Inf(-1), codec.ClassPoleInf},
-		{"large positive", 2e15, codec.ClassPoleInf},
-		{"large negative", -2e15, codec.ClassPoleInf},
+		{"NaN", math.NaN(), codec.ClassBoundaryInf},
+		{"+Inf", math.Inf(1), codec.ClassBoundaryInf},
+		{"-Inf", math.Inf(-1), codec.ClassBoundaryInf},
+		{"large positive", 2e15, codec.ClassBoundaryInf},
+		{"large negative", -2e15, codec.ClassBoundaryInf},
 		{"identity", 1.0, codec.ClassIdentity},
 		{"identity epsilon edge", 1.0 + 5e-10, codec.ClassIdentity},
 		{"normal", 1.5, codec.ClassNormal},
@@ -177,7 +177,7 @@ func TestDecodeErrors(t *testing.T) {
 		// Build a header with correct magic but version=99.
 		var buf bytes.Buffer
 		buf.Write([]byte{'T', 'Z', 'R', 'Z'}) // magic
-		buf.WriteByte(99)                       // bad version
+		buf.WriteByte(99)                     // bad version
 		_, err := codec.Decode(&buf)
 		if err == nil {
 			t.Fatal("expected error on unsupported version")
@@ -208,7 +208,7 @@ func TestEncodeEmptyInput(t *testing.T) {
 // TestKahanProdZeroAnchor verifies Mode B handles a zero-valued anchor.
 func TestKahanProdZeroAnchor(t *testing.T) {
 	// A sequence starting at zero triggers the zero-anchor path in newKahanProd.
-	// After the zero, a pole-zero event fires and resets the anchor to the next value.
+	// After the zero, a boundary-zero event fires and resets the anchor to the next value.
 	values := []float64{0.0, 5.0, 10.0, 20.0}
 	opts := codec.EncodeOptions{DriftMode: codec.DriftCompensate}
 	got := roundTrip(t, values, opts)
@@ -229,10 +229,29 @@ func TestKahanProdZeroAnchor(t *testing.T) {
 	}
 }
 
-// TestRoundTripPoleInf verifies pole-inf events (extreme ratio) are handled correctly.
-func TestRoundTripPoleInf(t *testing.T) {
-	// Jump from 1.0 to 1e16 triggers ClassPoleInf.
+// TestRoundTripBoundaryInf verifies boundary-inf events (extreme ratio) are handled correctly.
+func TestRoundTripBoundaryInf(t *testing.T) {
+	// Jump from 1.0 to 1e16 triggers ClassBoundaryInf.
 	values := []float64{1.0, 1e16, 2e16, 3e16}
+	got := roundTrip(t, values, codec.EncodeOptions{})
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch")
+	}
+	for i, want := range values {
+		if got[i] != want {
+			t.Errorf("index %d: got %v want %v", i, got[i], want)
+		}
+	}
+}
+
+// TestRoundTripNearZeroPrev verifies that a subnormal/near-zero prev triggers
+// ClassBoundaryZero (not ClassBoundaryInf) and the subsequent value is recovered
+// exactly. This exercises the BoundaryZeroThreshold path in computeRatio.
+func TestRoundTripNearZeroPrev(t *testing.T) {
+	// 1e-301 < BoundaryZeroThreshold (1e-300): the next ratio 5.0/1e-301 = 5e300
+	// would overflow to ClassBoundaryInf without the threshold check, storing 5e300
+	// instead of 5.0.
+	values := []float64{1.0, 1e-301, 5.0, 10.0}
 	got := roundTrip(t, values, codec.EncodeOptions{})
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch")

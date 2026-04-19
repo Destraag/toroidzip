@@ -15,16 +15,17 @@ const (
 	// normal floating-point range. Arithmetic is valid and reversible.
 	ClassNormal
 
-	// ClassPoleZero: the previous value was zero or near-zero, making the
-	// ratio undefined or extreme. The current value is stored verbatim in
-	// the pole event sidecar. This is the "Zero boundary" of the torus.
-	ClassPoleZero
+	// ClassBoundaryZero: the previous value was zero or near-zero, making the
+	// ratio undefined or extreme. The current value is stored verbatim as a
+	// boundary event. In the toroidal model, zero is the inner boundary where
+	// ratio arithmetic loses meaning.
+	ClassBoundaryZero
 
-	// ClassPoleInf: the ratio exceeds the infinity threshold, meaning the
-	// values have changed by an extreme factor. The Zero and Infinity poles
-	// are symmetric — both represent a boundary where the ratio loses
-	// meaningful arithmetic content. Stored verbatim in the sidecar.
-	ClassPoleInf
+	// ClassBoundaryInf: the ratio exceeds the infinity threshold, meaning the
+	// values have changed by an extreme factor. In the toroidal model, zero and
+	// infinity are the same inner boundary approached from opposite directions.
+	// Both collapse ratio arithmetic. Stored verbatim as a boundary event.
+	ClassBoundaryInf
 
 	// ClassReanchor: not a ratio — this position holds a verbatim float64
 	// anchor used to reset reconstruction and bound cumulative drift.
@@ -38,13 +39,13 @@ const (
 	// state in smooth data and should be treated as a special case.
 	IdentityEpsilon = 1e-9
 
-	// PoleInfThreshold: ratios with absolute value above this are classified
-	// as ClassPoleInf (infinity boundary event).
-	PoleInfThreshold = 1e15
+	// BoundaryInfThreshold: ratios with absolute value above this are classified
+	// as ClassBoundaryInf (infinity boundary event).
+	BoundaryInfThreshold = 1e15
 
-	// PoleZeroThreshold: |prev| below this triggers ClassPoleZero.
-	// Separate from ratio classification — triggered on the input value.
-	PoleZeroThreshold = 1e-300
+	// BoundaryZeroThreshold: |prev| below this triggers ClassBoundaryZero (zero boundary event).
+	// Separate from ratio classification — triggered on the input value, not the ratio.
+	BoundaryZeroThreshold = 1e-300
 )
 
 // DriftMode selects the error-management strategy for cumulative reconstruction drift.
@@ -68,21 +69,21 @@ const DefaultDriftMode = DriftReanchor
 
 // Classify returns the RatioClass for a computed ratio value.
 // The input should be the result of current/prev where prev != 0.
-// For the case where prev == 0 or is near-zero, use ClassPoleZero directly.
+// For the case where prev == 0 or is near-zero, use ClassBoundaryZero directly.
 func Classify(ratio float64) RatioClass {
 	if math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return ClassPoleInf
+		return ClassBoundaryInf
 	}
 	if math.Abs(ratio-1.0) < IdentityEpsilon {
 		return ClassIdentity
 	}
-	if math.Abs(ratio) > PoleInfThreshold {
-		return ClassPoleInf
+	if math.Abs(ratio) > BoundaryInfThreshold {
+		return ClassBoundaryInf
 	}
 	return ClassNormal
 }
 
-// IsBoundary returns true if the class represents a pole event (not a normal ratio).
+// IsBoundary returns true if the class represents a boundary event (not a normal ratio).
 func IsBoundary(c RatioClass) bool {
-	return c == ClassPoleZero || c == ClassPoleInf
+	return c == ClassBoundaryZero || c == ClassBoundaryInf
 }

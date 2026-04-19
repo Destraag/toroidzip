@@ -7,7 +7,7 @@ ToroidZip — Roadmap
 
 ### Milestone 1 — Baseline encoder ✓
 - Anchor + ratio computation
-- Boundary classification (Identity / Normal / Pole-Zero / Pole-Inf)
+- Boundary classification (Identity / Normal / Boundary-Zero / Boundary-Inf)
 - Raw float64 ratio stream with periodic re-anchoring (default K=256)
 - Lossless round-trip decoder
 - Tests passing, benchmarks wired
@@ -16,7 +16,7 @@ ToroidZip — Roadmap
 ### Milestone 2 — Entropy coding
 - Implement rANS (range Asymmetric Numeral Systems) encoder/decoder
 - Ratio distribution model (Laplace centered at 1.0 as starting point)
-- Pole event sidecar format (separate from main entropy stream)
+- Boundary event sidecar format (separate from main entropy stream)
 - Verify lossless round-trip with entropy coding
 - First real compression ratios
 
@@ -44,11 +44,16 @@ Metrics: compression ratio, encode MB/s, decode MB/s
 
 ## CLI flags
 
-    toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
+    toroidzip encode [--reanchor-interval N] [--drift-mode A|B|C] <input.f64> <output.tzrz>
     toroidzip decode <input.tzrz> <output.f64>
 
 `--reanchor-interval N` (default 256): lower = more accurate reconstruction,
 larger file. Higher = smaller file, more cumulative float drift between anchors.
+
+`--drift-mode A|B|C` (default A): error-management strategy.
+  A = reanchor: periodic verbatim anchors, lossless.
+  B = compensate: Kahan log-space product, near-lossless, no size overhead.
+  C = quantize: ratios rounded to float32, lossy, more compressible.
 
 ---
 
@@ -56,5 +61,9 @@ larger file. Higher = smaller file, more cumulative float drift between anchors.
 
     import "github.com/Destraag/toroidzip/codec"
 
-    err := codec.Encode(values, w, reanchorInterval)
+    opts := codec.EncodeOptions{
+        ReanchorInterval: 256,              // 0 = use default
+        DriftMode:        codec.DriftReanchor, // A=Reanchor B=Compensate C=Quantize
+    }
+    err := codec.Encode(values, w, opts)
     values, err := codec.Decode(r)
