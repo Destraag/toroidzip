@@ -1,5 +1,8 @@
 ToroidZip — Roadmap
 ===================
+Scope: PUBLIC — milestone tracker and intent. Committed to git.
+        Implementation detail, design rationale, and session notes live
+        in PLAN (gitignored, internal only).
 
 ## Status: Milestone 5 complete
 
