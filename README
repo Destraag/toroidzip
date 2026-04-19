@@ -17,7 +17,7 @@ Status: Milestone 1 (round-trip encoding, no entropy coder yet).
 Usage
 -----
 
-  go install github.com/dbrjo/toroidzip/cmd/toroidzip@latest
+  go install github.com/Destraag/toroidzip/cmd/toroidzip@latest
 
   toroidzip encode input.f64 output.tzrz
   toroidzip decode input.tzrz output.f64

@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	toroidzip encode <input.f64> <output.tzrz>
+//	toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
 //	toroidzip decode <input.tzrz> <output.f64>
 //
 // Input/output files are raw IEEE 754 little-endian float64 sequences.
@@ -10,11 +10,12 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"math"
 	"os"
 
-	"github.com/dbrjo/toroidzip/codec"
+	"github.com/Destraag/toroidzip/codec"
 )
 
 func main() {
@@ -41,23 +42,29 @@ func main() {
 }
 
 func runEncode(args []string) error {
-	if len(args) < 2 {
+	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
+	reanchorInterval := fs.Int("reanchor-interval", codec.DefaultReanchorInterval,
+		"write a verbatim anchor every N values to bound reconstruction drift (default 256; lower = more accurate, larger file)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 2 {
 		return fmt.Errorf("encode requires <input.f64> <output.tzrz>")
 	}
-	values, err := readFloat64File(args[0])
+	values, err := readFloat64File(fs.Arg(0))
 	if err != nil {
 		return fmt.Errorf("reading input: %w", err)
 	}
-	out, err := os.Create(args[1])
+	out, err := os.Create(fs.Arg(1))
 	if err != nil {
 		return fmt.Errorf("creating output: %w", err)
 	}
 	defer out.Close()
 
-	if err := codec.Encode(values, out, 0); err != nil {
+	if err := codec.Encode(values, out, *reanchorInterval); err != nil {
 		return fmt.Errorf("encoding: %w", err)
 	}
-	fmt.Printf("encoded %d values -> %s\n", len(values), args[1])
+	fmt.Printf("encoded %d values -> %s (reanchor-interval=%d)\n", len(values), fs.Arg(1), *reanchorInterval)
 	return nil
 }
 
@@ -111,6 +118,11 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `toroidzip — ratio-first float64 codec
 
 Usage:
-  toroidzip encode <input.f64> <output.tzrz>   compress raw float64 file
-  toroidzip decode <input.tzrz> <output.f64>   decompress to raw float64`)
+  toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
+  toroidzip decode <input.tzrz> <output.f64>
+
+Flags (encode):
+  --reanchor-interval N   verbatim anchor every N values (default 256)
+                          lower  = more accurate reconstruction, larger file
+                          higher = smaller file, more cumulative drift`)
 }

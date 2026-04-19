@@ -1,0 +1,60 @@
+ToroidZip — Roadmap
+===================
+
+## Status: Milestone 1 complete
+
+---
+
+### Milestone 1 — Baseline encoder ✓
+- Anchor + ratio computation
+- Boundary classification (Identity / Normal / Pole-Zero / Pole-Inf)
+- Raw float64 ratio stream with periodic re-anchoring (default K=256)
+- Lossless round-trip decoder
+- Tests passing, benchmarks wired
+- CLI scaffold
+
+### Milestone 2 — Entropy coding
+- Implement rANS (range Asymmetric Numeral Systems) encoder/decoder
+- Ratio distribution model (Laplace centered at 1.0 as starting point)
+- Pole event sidecar format (separate from main entropy stream)
+- Verify lossless round-trip with entropy coding
+- First real compression ratios
+
+### Milestone 3 — Benchmarking
+Compare against: raw float64, delta encoding, zstd, brotli, fpzip
+
+Target data classes:
+1. Smooth floating-point time series (IoT/sensor)
+2. Scientific measurement data (multi-order-of-magnitude range)
+3. Financial tick data
+4. Neural network weight tensors
+
+Metrics: compression ratio, encode MB/s, decode MB/s
+
+### Milestone 4 — Analysis and iteration
+- Identify winning/losing data classes and root causes
+- Adaptive entropy model
+- Explore error management options (compensated multiply, lossy mode)
+
+### Milestone 5 — Formalization
+- Algorithm writeup with mathematical basis
+- Integration guide (library API)
+
+---
+
+## CLI flags
+
+    toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
+    toroidzip decode <input.tzrz> <output.f64>
+
+`--reanchor-interval N` (default 256): lower = more accurate reconstruction,
+larger file. Higher = smaller file, more cumulative float drift between anchors.
+
+---
+
+## Library API
+
+    import "github.com/Destraag/toroidzip/codec"
+
+    err := codec.Encode(values, w, reanchorInterval)
+    values, err := codec.Decode(r)

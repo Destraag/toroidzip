@@ -6,7 +6,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/dbrjo/toroidzip/codec"
+	"github.com/Destraag/toroidzip/codec"
 )
 
 // roundTrip encodes then decodes values and returns the reconstructed slice.
