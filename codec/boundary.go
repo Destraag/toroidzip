@@ -30,6 +30,12 @@ const (
 	// ClassReanchor is not a ratio — this position holds a verbatim float64
 	// anchor used to reset reconstruction and bound cumulative drift.
 	ClassReanchor
+
+	// ClassNormalExact is used only in the v4 adaptive stream (EntropyAdaptive).
+	// It signals that the ratio could not be quantized within the declared
+	// tolerance ε and is stored as a full float64 payload instead. This class
+	// never appears in v1–v3 streams and is not produced by Classify.
+	ClassNormalExact
 )
 
 // Thresholds for boundary classification. These are tunable.
@@ -86,6 +92,15 @@ const (
 	// stored as uint16 instead of float64. The class stream is rANS-coded.
 	// Use AnalyzePrecision to find the recommended precision for a data set.
 	EntropyQuantized
+
+	// EntropyAdaptive is the v4 hybrid stream. For each ClassNormal ratio,
+	// the encoder checks whether quantization error is within tolerance ε:
+	//   - error < ε  → store as uint16 quantized symbol (ClassNormal)
+	//   - error ≥ ε  → store as float64 verbatim (ClassNormalExact)
+	// The class stream uses a 6-symbol rANS alphabet.
+	// At ε=0: output is bit-identical to EntropyLossless.
+	// At ε=∞: output matches EntropyQuantized.
+	EntropyAdaptive
 )
 
 // DefaultPrecisionBits is the quantisation depth used when

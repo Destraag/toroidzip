@@ -83,6 +83,108 @@ func TestRansDecodeTruncated(t *testing.T) {
 	}
 }
 
+// --- 6-symbol rANS (v4 adaptive alphabet) ---
+
+func TestRansFreqs6Sum(t *testing.T) {
+	cases := []struct {
+		name    string
+		classes []byte
+	}{
+		{"all six classes", []byte{0, 1, 2, 3, 4, 5}},
+		{"mostly identity + exact", makeStream6(10000, 0.05, 0.02)},
+		{"only ClassNormalExact", makeConstStream(100, byte(codec.ClassNormalExact))},
+		{"empty (degenerate)", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			freqs := codec.RansCountFreqs6(tc.classes)
+			var sum uint32
+			for i, f := range freqs {
+				if f < 1 {
+					t.Errorf("freqs6[%d] = %d, want >= 1", i, f)
+				}
+				sum += f
+			}
+			if sum != 4096 {
+				t.Errorf("sum = %d, want 4096", sum)
+			}
+		})
+	}
+}
+
+func TestRansRoundTrip6AllSixClasses(t *testing.T) {
+	// Each class appears at least twice to exercise all decode slots.
+	classes := []byte{0, 1, 2, 3, 4, 5, 5, 4, 3, 2, 1, 0}
+	ransRoundTrip6(t, classes)
+}
+
+func TestRansRoundTrip6Realistic(t *testing.T) {
+	// Realistic v4 distribution: ~88% identity, ~7% normal (quantized),
+	// ~3% exact (ClassNormalExact), ~2% boundary/reanchor events.
+	classes := makeStream6(10000, 0.10, 0.03)
+	ransRoundTrip6(t, classes)
+}
+
+func TestRansRoundTrip6OnlyExact(t *testing.T) {
+	// All symbols are ClassNormalExact (worst case for v4 — no quantization benefit).
+	classes := makeConstStream(1000, byte(codec.ClassNormalExact))
+	ransRoundTrip6(t, classes)
+}
+
+func TestRansRoundTrip6Single(t *testing.T) {
+	ransRoundTrip6(t, []byte{byte(codec.ClassNormalExact)})
+}
+
+func TestRansDecode6Truncated(t *testing.T) {
+	_, err := codec.RansDecode6([]byte{1, 2, 3}, codec.RansFreqs6{}, 1)
+	if err == nil {
+		t.Error("expected error on truncated stream, got nil")
+	}
+}
+
+func TestRansEncode6EmptyInput(t *testing.T) {
+	freqs := codec.RansCountFreqs6(nil)
+	encoded := codec.RansEncode6(nil, freqs)
+	if encoded != nil {
+		t.Errorf("expected nil for empty input, got %d bytes", len(encoded))
+	}
+	decoded, err := codec.RansDecode6(encoded, freqs, 0)
+	if err != nil || len(decoded) != 0 {
+		t.Errorf("unexpected result: err=%v decoded=%v", err, decoded)
+	}
+}
+
+// TestRans6CompatWith5Symbol verifies that a stream containing only symbols
+// 0-4 (no ClassNormalExact) round-trips identically through both the 5-symbol
+// and 6-symbol codecs. This validates that the 6-symbol codec is a strict
+// superset and the extra slot doesn't perturb existing symbol mapping.
+func TestRans6CompatWith5Symbol(t *testing.T) {
+	classes := makeIdentityStream(5000, 0.08)
+	// 5-symbol path
+	freqs5 := codec.RansCountFreqs(classes)
+	enc5 := codec.RansEncode(classes, freqs5)
+	dec5, err := codec.RansDecode(enc5, freqs5, len(classes))
+	if err != nil {
+		t.Fatalf("5-sym decode: %v", err)
+	}
+	// 6-symbol path (same classes, no symbol 5)
+	freqs6 := codec.RansCountFreqs6(classes)
+	enc6 := codec.RansEncode6(classes, freqs6)
+	dec6, err := codec.RansDecode6(enc6, freqs6, len(classes))
+	if err != nil {
+		t.Fatalf("6-sym decode: %v", err)
+	}
+	// Both must reproduce the original.
+	for i := range classes {
+		if dec5[i] != classes[i] {
+			t.Fatalf("5-sym mismatch at %d: got %d want %d", i, dec5[i], classes[i])
+		}
+		if dec6[i] != classes[i] {
+			t.Fatalf("6-sym mismatch at %d: got %d want %d", i, dec6[i], classes[i])
+		}
+	}
+}
+
 // --- Benchmarks ---
 
 func BenchmarkRansEncode(b *testing.B) {
@@ -150,4 +252,47 @@ func makeConstStream(n int, sym byte) []byte {
 		classes[i] = sym
 	}
 	return classes
+}
+
+// makeStream6 generates a 6-symbol class stream.
+// pNonIdentity fraction are ClassNormal (1); pExact fraction are ClassNormalExact (5);
+// the rest are ClassIdentity (0).
+func makeStream6(n int, pNonIdentity, pExact float64) []byte {
+	classes := make([]byte, n)
+	normalStep, exactStep := 0, 0
+	if pNonIdentity > 0 {
+		normalStep = int(1 / pNonIdentity)
+	}
+	if pExact > 0 {
+		exactStep = int(1 / pExact)
+	}
+	for i := range classes {
+		switch {
+		case exactStep > 0 && i%exactStep == 0:
+			classes[i] = byte(codec.ClassNormalExact)
+		case normalStep > 0 && i%normalStep == 0:
+			classes[i] = byte(codec.ClassNormal)
+		}
+	}
+	return classes
+}
+
+// ransRoundTrip6 encodes and decodes classes via the 6-symbol codec,
+// asserting byte-exact equality.
+func ransRoundTrip6(t *testing.T, classes []byte) {
+	t.Helper()
+	freqs := codec.RansCountFreqs6(classes)
+	encoded := codec.RansEncode6(classes, freqs)
+	decoded, err := codec.RansDecode6(encoded, freqs, len(classes))
+	if err != nil {
+		t.Fatalf("RansDecode6: %v", err)
+	}
+	if len(decoded) != len(classes) {
+		t.Fatalf("length mismatch: got %d want %d", len(decoded), len(classes))
+	}
+	for i := range classes {
+		if decoded[i] != classes[i] {
+			t.Errorf("index %d: got %d want %d", i, decoded[i], classes[i])
+		}
+	}
 }
