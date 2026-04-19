@@ -48,8 +48,7 @@ file_bytes() { wc -c < "$1" | tr -d ' '; }
 
 ratio() {
   local enc="$1"
-  # bc for portable floating point: encoded/uncompressed to 4dp
-  echo "scale=4; $enc / $UNCOMPRESSED_BYTES" | bc
+  awk "BEGIN { printf \"%.4f\", $enc / $UNCOMPRESSED_BYTES }"
 }
 
 time_compress() {
@@ -59,7 +58,7 @@ time_compress() {
   for _ in 1 2 3; do
     local t0 t1
     t0=$(date +%s%3N)
-    eval "$cmd" 2>/dev/null
+    eval "$cmd" >/dev/null 2>/dev/null
     t1=$(date +%s%3N)
     times+=( $(( t1 - t0 )) )
   done
@@ -72,7 +71,7 @@ time_compress() {
 mb_per_sec() {
   local ms="$1"
   if [[ "$ms" -eq 0 ]]; then echo "N/A"; return; fi
-  echo "scale=1; ($UNCOMPRESSED_BYTES / 1048576) / ($ms / 1000)" | bc
+  awk "BEGIN { printf \"%.1f\", ($UNCOMPRESSED_BYTES / 1048576) / ($ms / 1000) }"
 }
 
 # ── preamble ─────────────────────────────────────────────────────────────────
@@ -104,9 +103,9 @@ echo ""
 
 HAS_ZSTD=0; HAS_BROTLI=0; HAS_FPZIP=0
 
-require_tool zstd   "brew install zstd  /  apt install zstd"    && HAS_ZSTD=1   || true
-require_tool brotli "brew install brotli / apt install brotli"  && HAS_BROTLI=1 || true
-require_tool fpzip  "build from https://github.com/LLNL/fpzip"  && HAS_FPZIP=1  || true
+require_tool zstd   "choco install zstd  |  brew install zstd  |  apt install zstd"    && HAS_ZSTD=1   || true
+require_tool brotli "choco install brotli | brew install brotli | apt install brotli"  && HAS_BROTLI=1 || true
+require_tool fpzip  "build from https://github.com/LLNL/fpzip (no package available)"  && HAS_FPZIP=1  || true
 
 echo ""
 
