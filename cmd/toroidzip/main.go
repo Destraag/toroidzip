@@ -2,7 +2,7 @@
 //
 // Usage:
 //
-//	toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
+//	toroidzip encode [--reanchor-interval N] [--drift-mode A|B|C] <input.f64> <output.tzrz>
 //	toroidzip decode <input.tzrz> <output.f64>
 //
 // Input/output files are raw IEEE 754 little-endian float64 sequences.
@@ -44,13 +44,28 @@ func main() {
 func runEncode(args []string) error {
 	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
 	reanchorInterval := fs.Int("reanchor-interval", codec.DefaultReanchorInterval,
-		"write a verbatim anchor every N values to bound reconstruction drift (default 256; lower = more accurate, larger file)")
+		"write a verbatim anchor every N values (default 256; lower = more accurate, larger file)")
+	driftModeStr := fs.String("drift-mode", "A",
+		"error-management strategy: A=reanchor (lossless), B=compensate (near-lossless), C=quantize (lossy)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() < 2 {
 		return fmt.Errorf("encode requires <input.f64> <output.tzrz>")
 	}
+
+	var driftMode codec.DriftMode
+	switch *driftModeStr {
+	case "A", "a":
+		driftMode = codec.DriftReanchor
+	case "B", "b":
+		driftMode = codec.DriftCompensate
+	case "C", "c":
+		driftMode = codec.DriftQuantize
+	default:
+		return fmt.Errorf("--drift-mode must be A, B, or C (got %q)", *driftModeStr)
+	}
+
 	values, err := readFloat64File(fs.Arg(0))
 	if err != nil {
 		return fmt.Errorf("reading input: %w", err)
@@ -61,10 +76,15 @@ func runEncode(args []string) error {
 	}
 	defer out.Close()
 
-	if err := codec.Encode(values, out, *reanchorInterval); err != nil {
+	opts := codec.EncodeOptions{
+		ReanchorInterval: *reanchorInterval,
+		DriftMode:        driftMode,
+	}
+	if err := codec.Encode(values, out, opts); err != nil {
 		return fmt.Errorf("encoding: %w", err)
 	}
-	fmt.Printf("encoded %d values -> %s (reanchor-interval=%d)\n", len(values), fs.Arg(1), *reanchorInterval)
+	fmt.Printf("encoded %d values -> %s (reanchor-interval=%d drift-mode=%s)\n",
+		len(values), fs.Arg(1), *reanchorInterval, *driftModeStr)
 	return nil
 }
 
@@ -118,11 +138,15 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `toroidzip — ratio-first float64 codec
 
 Usage:
-  toroidzip encode [--reanchor-interval N] <input.f64> <output.tzrz>
+  toroidzip encode [flags] <input.f64> <output.tzrz>
   toroidzip decode <input.tzrz> <output.f64>
 
-Flags (encode):
+Encode flags:
   --reanchor-interval N   verbatim anchor every N values (default 256)
                           lower  = more accurate reconstruction, larger file
-                          higher = smaller file, more cumulative drift`)
+                          higher = smaller file, more cumulative drift
+  --drift-mode A|B|C      error-management strategy (default A)
+                          A = reanchor: periodic verbatim anchors, lossless
+                          B = compensate: Kahan log-space product, near-lossless
+                          C = quantize: ratios rounded to float32, lossy`)
 }

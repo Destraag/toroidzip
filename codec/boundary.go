@@ -47,6 +47,25 @@ const (
 	PoleZeroThreshold = 1e-300
 )
 
+// DriftMode selects the error-management strategy for cumulative reconstruction drift.
+type DriftMode byte
+
+const (
+	// DriftReanchor is mode A: insert verbatim anchors every K values. Lossless.
+	DriftReanchor DriftMode = iota
+
+	// DriftCompensate is mode B: Kahan log-space product accumulation.
+	// Near-lossless — reduces drift without increasing file size.
+	DriftCompensate
+
+	// DriftQuantize is mode C: ratios rounded to float32 precision before storage.
+	// Explicitly lossy. Produces more compressible ratio distributions.
+	DriftQuantize
+)
+
+// DefaultDriftMode is used when EncodeOptions.DriftMode is zero-valued.
+const DefaultDriftMode = DriftReanchor
+
 // Classify returns the RatioClass for a computed ratio value.
 // The input should be the result of current/prev where prev != 0.
 // For the case where prev == 0 or is near-zero, use ClassPoleZero directly.

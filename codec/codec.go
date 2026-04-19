@@ -24,6 +24,17 @@ import (
 // anchor writes. Lower values reduce drift but increase file size.
 const DefaultReanchorInterval = 256
 
+// EncodeOptions configures the encoder.
+type EncodeOptions struct {
+	// ReanchorInterval is the number of ratio steps between verbatim anchors.
+	// 0 means use DefaultReanchorInterval.
+	ReanchorInterval int
+
+	// DriftMode selects the error-management strategy.
+	// 0 means DefaultDriftMode (DriftReanchor).
+	DriftMode DriftMode
+}
+
 // Magic bytes identifying a ToroidZip stream.
 var magic = [4]byte{'T', 'Z', 'R', 'Z'}
 
@@ -31,20 +42,24 @@ var magic = [4]byte{'T', 'Z', 'R', 'Z'}
 const version byte = 1
 
 // Encode compresses values into the ToroidZip format and writes to w.
-// reanchorInterval controls how often a verbatim anchor is written (0 = use default).
-func Encode(values []float64, w io.Writer, reanchorInterval int) error {
+func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 	if len(values) == 0 {
 		return fmt.Errorf("toroidzip: encode: empty input")
 	}
+	reanchorInterval := opts.ReanchorInterval
 	if reanchorInterval <= 0 {
 		reanchorInterval = DefaultReanchorInterval
 	}
+	driftMode := opts.DriftMode
 
-	// Header: magic (4) + version (1) + reanchorInterval (4) + count (8) = 17 bytes
+	// Header: magic (4) + version (1) + driftMode (1) + reanchorInterval (4) + count (8) = 18 bytes
 	if _, err := w.Write(magic[:]); err != nil {
 		return err
 	}
 	if err := writeByte(w, version); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(driftMode)); err != nil {
 		return err
 	}
 	if err := writeUint32(w, uint32(reanchorInterval)); err != nil {
@@ -55,13 +70,21 @@ func Encode(values []float64, w io.Writer, reanchorInterval int) error {
 	}
 
 	// Encode the value stream.
+	// prev tracks the effective previous value used to compute ratios.
+	// Mode A: prev = original input (decoder drifts, bounded by reanchors).
+	// Mode B: prev = Kahan-reconstructed value (encoder stays in sync with decoder).
+	// Mode C: prev = quantized reconstruction (encoder stays in sync with decoder).
 	prev := values[0]
+	var kp kahanProd
+	if driftMode == DriftCompensate {
+		kp = newKahanProd(prev)
+	}
 	if err := writeFloat64(w, prev); err != nil {
 		return err
 	}
 
 	for i := 1; i < len(values); i++ {
-		// Periodic re-anchor to bound cumulative drift.
+		// Periodic re-anchor resets all modes to exact value.
 		if i%reanchorInterval == 0 {
 			if err := writeByte(w, byte(ClassReanchor)); err != nil {
 				return err
@@ -70,17 +93,42 @@ func Encode(values []float64, w io.Writer, reanchorInterval int) error {
 				return err
 			}
 			prev = values[i]
+			if driftMode == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
 			continue
 		}
 
 		ratio, class := computeRatio(values[i], prev)
+
+		// Mode C: quantize ratio to float32 precision for compressibility.
+		if driftMode == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
+			ratio = float64(float32(ratio))
+			class = Classify(ratio)
+		}
+
 		if err := writeByte(w, byte(class)); err != nil {
 			return err
 		}
 		if err := writeFloat64(w, ratio); err != nil {
 			return err
 		}
-		prev = values[i]
+
+		// Advance prev according to mode.
+		switch {
+		case class == ClassPoleZero || class == ClassPoleInf:
+			// Verbatim event: reset prev to the actual value.
+			prev = values[i]
+			if driftMode == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
+		case driftMode == DriftCompensate:
+			prev = kp.multiply(ratio)
+		case driftMode == DriftQuantize:
+			prev = prev * ratio // ratio is already quantized
+		default: // DriftReanchor
+			prev = values[i]
+		}
 	}
 
 	return nil
@@ -105,11 +153,17 @@ func Decode(r io.Reader) ([]float64, error) {
 		return nil, fmt.Errorf("toroidzip: decode: unsupported version %d", ver)
 	}
 
+	driftModeByte, err := readByte(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading drift mode: %w", err)
+	}
+	driftMode := DriftMode(driftModeByte)
+
 	reanchorInterval, err := readUint32(r)
 	if err != nil {
 		return nil, fmt.Errorf("toroidzip: decode: reading reanchor interval: %w", err)
 	}
-	_ = reanchorInterval // stored for future use; reconstruction uses the class byte
+	_ = reanchorInterval // stored for reference; reconstruction uses the class byte
 
 	count, err := readUint64(r)
 	if err != nil {
@@ -127,6 +181,11 @@ func Decode(r io.Reader) ([]float64, error) {
 		return nil, fmt.Errorf("toroidzip: decode: reading anchor: %w", err)
 	}
 
+	var kp kahanProd
+	if driftMode == DriftCompensate {
+		kp = newKahanProd(values[0])
+	}
+
 	for i := uint64(1); i < count; i++ {
 		classByte, err := readByte(r)
 		if err != nil {
@@ -141,13 +200,46 @@ func Decode(r io.Reader) ([]float64, error) {
 		if class == ClassReanchor || IsBoundary(class) {
 			// Verbatim value: re-anchor or pole event stores the raw value directly.
 			values[i] = val
+			if driftMode == DriftCompensate {
+				kp = newKahanProd(val)
+			}
+		} else if driftMode == DriftCompensate {
+			// Mode B: Kahan log-space product — reduces cumulative drift.
+			values[i] = kp.multiply(val)
 		} else {
-			// Reconstruct: x[n] = x[n-1] * ratio.
+			// Mode A / Mode C: x[n] = x[n-1] * ratio.
 			values[i] = values[i-1] * val
 		}
 	}
 
 	return values, nil
+}
+
+// kahanProd tracks a cumulative product in log-space with Kahan compensation.
+// This is Mode B's drift-reduction strategy: far more accurate than naive
+// float64 chained multiplication over long sequences.
+type kahanProd struct {
+	logAbs float64 // log(|accumulated product|)
+	comp   float64 // Kahan compensation term
+	sign   float64 // +1 or -1
+}
+
+func newKahanProd(v float64) kahanProd {
+	if v == 0 {
+		return kahanProd{math.Inf(-1), 0, 1}
+	}
+	return kahanProd{math.Log(math.Abs(v)), 0, math.Copysign(1, v)}
+}
+
+// multiply applies one ratio step and returns the reconstructed value.
+func (k *kahanProd) multiply(ratio float64) float64 {
+	k.sign *= math.Copysign(1, ratio)
+	// Kahan summation of log(|ratio|) into logAbs.
+	y := math.Log(math.Abs(ratio)) - k.comp
+	t := k.logAbs + y
+	k.comp = (t - k.logAbs) - y
+	k.logAbs = t
+	return k.sign * math.Exp(k.logAbs)
 }
 
 // computeRatio returns the ratio r = current/prev and its class.
