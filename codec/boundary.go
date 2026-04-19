@@ -67,6 +67,31 @@ const (
 // DefaultDriftMode is used when EncodeOptions.DriftMode is zero-valued.
 const DefaultDriftMode = DriftReanchor
 
+// EntropyMode selects the entropy coding layer applied to the ratio stream.
+type EntropyMode byte
+
+const (
+	// EntropyRaw is the Milestone 1 baseline: no entropy coding, one class byte
+	// plus a full float64 per value regardless of class.
+	EntropyRaw EntropyMode = iota
+
+	// EntropyLossless compresses the class byte stream with rANS and omits the
+	// float64 payload for ClassIdentity events (decoder reconstructs as ratio=1.0).
+	// Provides large reductions on smooth data. Near-lossless: ClassIdentity
+	// events introduce at most IdentityEpsilon relative error, bounded by reanchors.
+	EntropyLossless
+
+	// EntropyQuantized is explicitly lossy: ClassNormal ratios are mapped to
+	// N-bit log-space symbols (see PrecisionBits / DefaultPrecisionBits) and
+	// stored as uint16 instead of float64. The class stream is rANS-coded.
+	// Use AnalyzePrecision to find the recommended precision for a data set.
+	EntropyQuantized
+)
+
+// DefaultPrecisionBits is the quantisation depth used when
+// EncodeOptions.PrecisionBits is 0 and EntropyMode is EntropyQuantized.
+const DefaultPrecisionBits = 8
+
 // Classify returns the RatioClass for a computed ratio value.
 // The input should be the result of current/prev where prev != 0.
 // For the case where prev == 0 or is near-zero, use ClassBoundaryZero directly.

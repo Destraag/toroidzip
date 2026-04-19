@@ -263,6 +263,242 @@ func TestRoundTripNearZeroPrev(t *testing.T) {
 	}
 }
 
+// --- Version 2 (EntropyLossless) round-trip tests ---
+
+// TestRoundTripLosslessSmooth verifies v2 near-lossless reconstruction of smooth data.
+// ClassIdentity events are reconstructed as ratio=1.0 (within IdentityEpsilon per step).
+func TestRoundTripLosslessSmooth(t *testing.T) {
+	values := make([]float64, 1000)
+	v := 100.0
+	for i := range values {
+		v *= 1.001
+		values[i] = v
+	}
+	// Tight reanchor interval so ClassIdentity error stays bounded.
+	opts := codec.EncodeOptions{EntropyMode: codec.EntropyLossless, ReanchorInterval: 64}
+	got := roundTrip(t, values, opts)
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch")
+	}
+	for i, want := range values {
+		// Reanchors are exact. Between anchors ClassIdentity may accumulate
+		// up to reanchorInterval * IdentityEpsilon (~64e-9) relative error.
+		if math.Abs(got[i]-want) > math.Abs(want)*1e-6 {
+			t.Errorf("index %d: got %v want %v (diff %e)", i, got[i], want, got[i]-want)
+		}
+	}
+}
+
+// TestRoundTripLosslessSingleValue exercises the single-element edge case.
+func TestRoundTripLosslessSingleValue(t *testing.T) {
+	values := []float64{3.14159}
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyLossless})
+	if len(got) != 1 || got[0] != 3.14159 {
+		t.Errorf("got %v want [3.14159]", got)
+	}
+}
+
+// TestRoundTripLosslessBoundary verifies boundary and reanchor events are
+// stored verbatim (exact) in lossless mode.
+func TestRoundTripLosslessBoundary(t *testing.T) {
+	values := []float64{1.0, 2.0, 0.0, 3.0, 1e16, 4.0}
+	opts := codec.EncodeOptions{EntropyMode: codec.EntropyLossless}
+	got := roundTrip(t, values, opts)
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch")
+	}
+	// 0.0 and 1e16 trigger boundary events — must be exact.
+	for i, want := range values {
+		if want == 0 || want == 1e16 {
+			if got[i] != want {
+				t.Errorf("boundary index %d: got %v want %v", i, got[i], want)
+			}
+		}
+	}
+}
+
+// TestRoundTripLosslessDriftCompensate verifies v2+DriftCompensate stays tight.
+func TestRoundTripLosslessDriftCompensate(t *testing.T) {
+	values := make([]float64, 2000)
+	v := 1.0
+	for i := range values {
+		v *= 1.0005
+		values[i] = v
+	}
+	opts := codec.EncodeOptions{
+		EntropyMode: codec.EntropyLossless,
+		DriftMode:   codec.DriftCompensate,
+	}
+	got := roundTrip(t, values, opts)
+	for i, want := range values {
+		if math.Abs(got[i]-want) > math.Abs(want)*1e-6 {
+			t.Errorf("index %d: got %v want %v (diff %e)", i, got[i], want, got[i]-want)
+		}
+	}
+}
+
+// TestLosslessStreamSmaller verifies v2 produces a shorter byte stream than v1
+// for smooth data (where most ratios are ClassIdentity).
+func TestLosslessStreamSmaller(t *testing.T) {
+	values := make([]float64, 10000)
+	v := 100.0
+	for i := range values {
+		v *= 1.0 + (rand.Float64()-0.5)*1e-10 // nearly constant → most ClassIdentity
+		values[i] = v
+	}
+	var v1Buf, v2Buf bytes.Buffer
+	if err := codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
+		t.Fatal(err)
+	}
+	if err := codec.Encode(values, &v2Buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
+		t.Fatal(err)
+	}
+	if v2Buf.Len() >= v1Buf.Len() {
+		t.Errorf("lossless stream (%d bytes) not smaller than raw (%d bytes)", v2Buf.Len(), v1Buf.Len())
+	}
+}
+
+// --- Version 3 (EntropyQuantized) round-trip tests ---
+
+// TestRoundTripQuantizedSmooth verifies v3 approximate round-trip on smooth data.
+func TestRoundTripQuantizedSmooth(t *testing.T) {
+	values := make([]float64, 500)
+	v := 100.0
+	for i := range values {
+		v *= 1.005
+		values[i] = v
+	}
+	opts := codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 12}
+	got := roundTrip(t, values, opts)
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch")
+	}
+	for i, want := range values {
+		if math.IsNaN(got[i]) || math.IsInf(got[i], 0) {
+			t.Fatalf("index %d: non-finite %v", i, got[i])
+		}
+		// At 12-bit precision, each ratio is quantized to ~0.2% resolution.
+		// Accumulated error across 500 steps (with ReanchorInterval=256):
+		// worst-case ~ReanchorInterval * 0.2% ≈ 50% accumulated — use 1% per step.
+		if math.Abs(got[i]-want) > math.Abs(want)*0.05 {
+			t.Errorf("index %d: got %v want %v (ratio error %e)", i, got[i], want,
+				math.Abs(got[i]-want)/math.Abs(want))
+		}
+	}
+}
+
+// TestRoundTripQuantizedSingleValue exercises the single-element edge case.
+func TestRoundTripQuantizedSingleValue(t *testing.T) {
+	values := []float64{2.71828}
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyQuantized})
+	if len(got) != 1 || got[0] != 2.71828 {
+		t.Errorf("got %v want [2.71828]", got)
+	}
+}
+
+// TestRoundTripQuantizedPrecisions checks that higher precision gives less error.
+func TestRoundTripQuantizedPrecisions(t *testing.T) {
+	values := make([]float64, 50)
+	v := 10.0
+	for i := range values {
+		v *= 1.02
+		values[i] = v
+	}
+	opts4 := codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 4, ReanchorInterval: 10}
+	opts14 := codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 14, ReanchorInterval: 10}
+
+	err4 := maxRelErr(roundTrip(t, values, opts4), values)
+	err14 := maxRelErr(roundTrip(t, values, opts14), values)
+
+	if err14 >= err4 {
+		t.Errorf("higher precision should give less error: err4=%e err14=%e", err4, err14)
+	}
+}
+
+// TestQuantizedStreamSmaller verifies v3 (low precision) is smaller than v1.
+func TestQuantizedStreamSmaller(t *testing.T) {
+	values := make([]float64, 5000)
+	v := 1.0
+	for i := range values {
+		v *= 1.001
+		values[i] = v
+	}
+	var v1Buf, v3Buf bytes.Buffer
+	codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw})
+	codec.Encode(values, &v3Buf, codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8})
+	if v3Buf.Len() >= v1Buf.Len() {
+		t.Errorf("quantized stream (%d bytes) not smaller than raw (%d bytes)", v3Buf.Len(), v1Buf.Len())
+	}
+}
+
+// TestQuantizedRoundTripUint8Tier verifies encode/decode at 4 bits (uint8 tier).
+func TestQuantizedRoundTripUint8Tier(t *testing.T) {
+	values := make([]float64, 500)
+	v := 10.0
+	for i := range values {
+		v *= 1.01
+		values[i] = v
+	}
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyQuantized, PrecisionBits: 4,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	// 4 bits → ε_max ≈ 0.414; 50% relative error tolerance.
+	if e := maxRelErr(got, values); e > 0.5 {
+		t.Errorf("max relative error %f exceeds 0.5 for 4-bit quantization", e)
+	}
+}
+
+// TestQuantizedRoundTripUint32Tier verifies encode/decode at 20 bits (uint32 tier).
+func TestQuantizedRoundTripUint32Tier(t *testing.T) {
+	values := make([]float64, 500)
+	v := 10.0
+	for i := range values {
+		v *= 1.001
+		values[i] = v
+	}
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyQuantized, PrecisionBits: 20,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	// 20 bits → ε_max ≈ 2.6e-6; 1e-4 relative error tolerance.
+	if e := maxRelErr(got, values); e > 1e-4 {
+		t.Errorf("max relative error %e exceeds 1e-4 for 20-bit quantization", e)
+	}
+}
+
+// maxRelErr returns the maximum relative error between got and want.
+func maxRelErr(got, want []float64) float64 {
+	var maxErr float64
+	for i := range want {
+		if want[i] != 0 {
+			e := math.Abs(got[i]-want[i]) / math.Abs(want[i])
+			if e > maxErr {
+				maxErr = e
+			}
+		}
+	}
+	return maxErr
+}
+
 // BenchmarkEncode measures encoding throughput on a smooth series.
 func BenchmarkEncode(b *testing.B) {
 	values := make([]float64, 100_000)

@@ -14,6 +14,7 @@
 package codec
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -33,50 +34,74 @@ type EncodeOptions struct {
 	// DriftMode selects the error-management strategy.
 	// 0 means DefaultDriftMode (DriftReanchor).
 	DriftMode DriftMode
+
+	// EntropyMode selects the entropy coding layer.
+	// 0 means EntropyRaw (Milestone 1 baseline, no compression).
+	EntropyMode EntropyMode
+
+	// PrecisionBits is the log-space quantisation depth for EntropyQuantized.
+	// 0 means DefaultPrecisionBits.
+	PrecisionBits int
 }
 
 // Magic bytes identifying a ToroidZip stream.
 var magic = [4]byte{'T', 'Z', 'R', 'Z'}
 
-// version is the current stream format version.
-const version byte = 1
+// Stream format version constants.
+const (
+	versionRaw       byte = 1 // EntropyRaw baseline
+	versionLossless  byte = 2 // EntropyLossless
+	versionQuantized byte = 3 // EntropyQuantized
+)
 
 // Encode compresses values into the ToroidZip format and writes to w.
 func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 	if len(values) == 0 {
 		return fmt.Errorf("toroidzip: encode: empty input")
 	}
-	reanchorInterval := opts.ReanchorInterval
-	if reanchorInterval <= 0 {
-		reanchorInterval = DefaultReanchorInterval
+	if opts.ReanchorInterval <= 0 {
+		opts.ReanchorInterval = DefaultReanchorInterval
 	}
-	driftMode := opts.DriftMode
+	switch opts.EntropyMode {
+	case EntropyRaw:
+		return encodeRaw(values, w, opts)
+	case EntropyLossless:
+		return encodeLossless(values, w, opts)
+	case EntropyQuantized:
+		return encodeQuantized(values, w, opts)
+	default:
+		return fmt.Errorf("toroidzip: encode: unknown entropy mode %d", opts.EntropyMode)
+	}
+}
 
-	// Header: magic (4) + version (1) + driftMode (1) + reanchorInterval (4) + count (8) = 18 bytes
+// encodeRaw writes the version-1 raw stream.
+// Header: magic(4) + version=1(1) + driftMode(1) + reanchorInterval(4) + count(8) = 18 bytes.
+// Body: anchor float64, then per-value: class_byte(1) + float64(8).
+func encodeRaw(values []float64, w io.Writer, opts EncodeOptions) error {
+	ri, dm := opts.ReanchorInterval, opts.DriftMode
 	if _, err := w.Write(magic[:]); err != nil {
 		return err
 	}
-	if err := writeByte(w, version); err != nil {
+	if err := writeByte(w, versionRaw); err != nil {
 		return err
 	}
-	if err := writeByte(w, byte(driftMode)); err != nil {
+	if err := writeByte(w, byte(dm)); err != nil {
 		return err
 	}
-	if err := writeUint32(w, uint32(reanchorInterval)); err != nil {
+	if err := writeUint32(w, uint32(ri)); err != nil {
 		return err
 	}
 	if err := writeUint64(w, uint64(len(values))); err != nil {
 		return err
 	}
 
-	// Encode the value stream.
 	// prev tracks the effective previous value used to compute ratios.
 	// Mode A: prev = original input (decoder drifts, bounded by reanchors).
 	// Mode B: prev = Kahan-reconstructed value (encoder stays in sync with decoder).
 	// Mode C: prev = quantized reconstruction (encoder stays in sync with decoder).
 	prev := values[0]
 	var kp kahanProd
-	if driftMode == DriftCompensate {
+	if dm == DriftCompensate {
 		kp = newKahanProd(prev)
 	}
 	if err := writeFloat64(w, prev); err != nil {
@@ -84,8 +109,7 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 	}
 
 	for i := 1; i < len(values); i++ {
-		// Periodic re-anchor resets all modes to exact value.
-		if i%reanchorInterval == 0 {
+		if i%ri == 0 {
 			if err := writeByte(w, byte(ClassReanchor)); err != nil {
 				return err
 			}
@@ -93,16 +117,14 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 				return err
 			}
 			prev = values[i]
-			if driftMode == DriftCompensate {
+			if dm == DriftCompensate {
 				kp = newKahanProd(prev)
 			}
 			continue
 		}
 
 		ratio, class := computeRatio(values[i], prev)
-
-		// Mode C: quantize ratio to float32 precision for compressibility.
-		if driftMode == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
+		if dm == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
 			ratio = float64(float32(ratio))
 			class = Classify(ratio)
 		}
@@ -114,29 +136,186 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 			return err
 		}
 
-		// Advance prev according to mode.
 		switch {
 		case class == ClassBoundaryZero || class == ClassBoundaryInf:
-			// Verbatim event: reset prev to the actual value.
 			prev = values[i]
-			if driftMode == DriftCompensate {
+			if dm == DriftCompensate {
 				kp = newKahanProd(prev)
 			}
-		case driftMode == DriftCompensate:
+		case dm == DriftCompensate:
 			prev = kp.multiply(ratio)
-		case driftMode == DriftQuantize:
-			prev = prev * ratio // ratio is already quantized
-		default: // DriftReanchor
+		case dm == DriftQuantize:
+			prev = prev * ratio
+		default:
 			prev = values[i]
 		}
 	}
-
 	return nil
+}
+
+// gatherRans performs the encoder's first pass, collecting the class stream
+// and packed payloads for the lossless/quantized formats.
+//
+// Payload layout (sequential bytes after the 8-byte anchor float64):
+//
+//	ClassIdentity:            nothing  — decoder keeps prev unchanged
+//	ClassNormal (lossless):   8 bytes float64 (ratio)
+//	ClassNormal (quantized):  1/2/4 bytes uint8/uint16/uint32 LE (log-space symbol)
+//	                          tier = QuantPayloadTier(bits): 1→bits 1–8, 2→bits 9–16, 4→bits 17–30
+//	ClassBoundary*/Reanchor:  8 bytes float64 (verbatim current value)
+func gatherRans(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
+	ri, dm := opts.ReanchorInterval, opts.DriftMode
+	bits := opts.PrecisionBits
+	if bits <= 0 {
+		bits = DefaultPrecisionBits
+	}
+
+	payloads = make([]byte, 0, len(values)*4)
+	payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[0]))
+	classes = make([]byte, 0, len(values)-1)
+
+	prev := values[0]
+	var kp kahanProd
+	if dm == DriftCompensate {
+		kp = newKahanProd(prev)
+	}
+
+	for i := 1; i < len(values); i++ {
+		if i%ri == 0 {
+			classes = append(classes, byte(ClassReanchor))
+			payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+			prev = values[i]
+			if dm == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
+			continue
+		}
+
+		ratio, class := computeRatio(values[i], prev)
+		// DriftQuantize float32-rounds the ratio before storage (any entropy mode).
+		if dm == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
+			ratio = float64(float32(ratio))
+			class = Classify(ratio)
+		}
+
+		classes = append(classes, byte(class))
+		switch class {
+		case ClassIdentity:
+			// No payload. Both encoder and decoder leave prev unchanged.
+		case ClassNormal:
+			if opts.EntropyMode == EntropyQuantized {
+				sym := QuantizeRatio(ratio, bits)
+				switch QuantPayloadTier(bits) {
+				case 1:
+					payloads = append(payloads, byte(sym))
+				case 2:
+					payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym))
+				default: // 4
+					payloads = binary.LittleEndian.AppendUint32(payloads, sym)
+				}
+				ratio = DequantizeRatio(sym, bits) // encoder tracks dequantized ratio
+			} else {
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
+			}
+			if dm == DriftCompensate {
+				prev = kp.multiply(ratio)
+			} else {
+				prev = prev * ratio
+			}
+		case ClassBoundaryZero, ClassBoundaryInf:
+			// Store the actual current value verbatim.
+			payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+			prev = values[i]
+			if dm == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
+			// ClassReanchor is handled at the top of the loop.
+		}
+	}
+	return classes, payloads
+}
+
+// writeRansBody writes ransFreqs(20) + ransLen(4) + ransStream + payloads.
+func writeRansBody(w io.Writer, classes []byte, freqs RansFreqs, payloads []byte) error {
+	for _, f := range freqs {
+		if err := writeUint32(w, f); err != nil {
+			return err
+		}
+	}
+	rs := RansEncode(classes, freqs)
+	if err := writeUint32(w, uint32(len(rs))); err != nil {
+		return err
+	}
+	if _, err := w.Write(rs); err != nil {
+		return err
+	}
+	_, err := w.Write(payloads)
+	return err
+}
+
+// encodeLossless writes the version-2 lossless stream.
+// Header: magic(4) + version=2(1) + driftMode(1) + reanchorInterval(4) +
+//
+//	count(8) + ransFreqs(20) = 38 bytes.
+//
+// Body: [ransLen(4)][ransStream][anchor float64][per-event payloads].
+func encodeLossless(values []float64, w io.Writer, opts EncodeOptions) error {
+	classes, payloads := gatherRans(values, opts)
+	freqs := RansCountFreqs(classes)
+	if _, err := w.Write(magic[:]); err != nil {
+		return err
+	}
+	if err := writeByte(w, versionLossless); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(opts.DriftMode)); err != nil {
+		return err
+	}
+	if err := writeUint32(w, uint32(opts.ReanchorInterval)); err != nil {
+		return err
+	}
+	if err := writeUint64(w, uint64(len(values))); err != nil {
+		return err
+	}
+	return writeRansBody(w, classes, freqs, payloads)
+}
+
+// encodeQuantized writes the version-3 quantized stream.
+// Header: magic(4) + version=3(1) + driftMode(1) + reanchorInterval(4) +
+//
+//	count(8) + precisionBits(1) + ransFreqs(20) = 39 bytes.
+//
+// Body: [ransLen(4)][ransStream][anchor float64][per-event payloads].
+func encodeQuantized(values []float64, w io.Writer, opts EncodeOptions) error {
+	bits := opts.PrecisionBits
+	if bits <= 0 {
+		bits = DefaultPrecisionBits
+	}
+	classes, payloads := gatherRans(values, opts)
+	freqs := RansCountFreqs(classes)
+	if _, err := w.Write(magic[:]); err != nil {
+		return err
+	}
+	if err := writeByte(w, versionQuantized); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(opts.DriftMode)); err != nil {
+		return err
+	}
+	if err := writeUint32(w, uint32(opts.ReanchorInterval)); err != nil {
+		return err
+	}
+	if err := writeUint64(w, uint64(len(values))); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(bits)); err != nil {
+		return err
+	}
+	return writeRansBody(w, classes, freqs, payloads)
 }
 
 // Decode decompresses a ToroidZip stream from r and returns the original values.
 func Decode(r io.Reader) ([]float64, error) {
-	// Read header.
 	var hdrMagic [4]byte
 	if _, err := io.ReadFull(r, hdrMagic[:]); err != nil {
 		return nil, fmt.Errorf("toroidzip: decode: reading magic: %w", err)
@@ -144,26 +323,33 @@ func Decode(r io.Reader) ([]float64, error) {
 	if hdrMagic != magic {
 		return nil, fmt.Errorf("toroidzip: decode: invalid magic bytes")
 	}
-
 	ver, err := readByte(r)
 	if err != nil {
 		return nil, fmt.Errorf("toroidzip: decode: reading version: %w", err)
 	}
-	if ver != version {
+	switch ver {
+	case versionRaw:
+		return decodeV1(r)
+	case versionLossless:
+		return decodeV2(r)
+	case versionQuantized:
+		return decodeV3(r)
+	default:
 		return nil, fmt.Errorf("toroidzip: decode: unsupported version %d", ver)
 	}
+}
 
+// decodeV1 reads a version-1 raw stream (magic+version already consumed).
+func decodeV1(r io.Reader) ([]float64, error) {
 	driftModeByte, err := readByte(r)
 	if err != nil {
 		return nil, fmt.Errorf("toroidzip: decode: reading drift mode: %w", err)
 	}
 	driftMode := DriftMode(driftModeByte)
 
-	reanchorInterval, err := readUint32(r)
-	if err != nil {
+	if _, err = readUint32(r); err != nil { // reanchorInterval unused by decoder
 		return nil, fmt.Errorf("toroidzip: decode: reading reanchor interval: %w", err)
 	}
-	_ = reanchorInterval // stored for reference; reconstruction uses the class byte
 
 	count, err := readUint64(r)
 	if err != nil {
@@ -174,8 +360,6 @@ func Decode(r io.Reader) ([]float64, error) {
 	}
 
 	values := make([]float64, count)
-
-	// Read first anchor.
 	values[0], err = readFloat64(r)
 	if err != nil {
 		return nil, fmt.Errorf("toroidzip: decode: reading anchor: %w", err)
@@ -195,23 +379,183 @@ func Decode(r io.Reader) ([]float64, error) {
 		if err != nil {
 			return nil, fmt.Errorf("toroidzip: decode: reading value at %d: %w", i, err)
 		}
-
 		class := RatioClass(classByte)
 		if class == ClassReanchor || IsBoundary(class) {
-			// Verbatim value: re-anchor or boundary event stores the raw value directly.
 			values[i] = val
 			if driftMode == DriftCompensate {
 				kp = newKahanProd(val)
 			}
 		} else if driftMode == DriftCompensate {
-			// Mode B: Kahan log-space product — reduces cumulative drift.
 			values[i] = kp.multiply(val)
 		} else {
-			// Mode A / Mode C: x[n] = x[n-1] * ratio.
 			values[i] = values[i-1] * val
 		}
 	}
+	return values, nil
+}
 
+// readCommonRansHeader reads driftMode(1) + reanchorInterval(4) + count(8)
+// from a v2/v3 stream (magic and version already consumed).
+func readCommonRansHeader(r io.Reader) (driftMode DriftMode, count uint64, err error) {
+	var dmb byte
+	dmb, err = readByte(r)
+	if err != nil {
+		err = fmt.Errorf("toroidzip: decode: reading drift mode: %w", err)
+		return
+	}
+	driftMode = DriftMode(dmb)
+	if _, err = readUint32(r); err != nil {
+		err = fmt.Errorf("toroidzip: decode: reading reanchor interval: %w", err)
+		return
+	}
+	count, err = readUint64(r)
+	if err != nil {
+		err = fmt.Errorf("toroidzip: decode: reading count: %w", err)
+		return
+	}
+	if count == 0 {
+		err = fmt.Errorf("toroidzip: decode: zero count")
+	}
+	return
+}
+
+// readRansFreqs reads the 5-entry frequency table (20 bytes).
+func readRansFreqs(r io.Reader) (RansFreqs, error) {
+	var freqs RansFreqs
+	for i := range freqs {
+		f, err := readUint32(r)
+		if err != nil {
+			return freqs, fmt.Errorf("toroidzip: decode: reading rans freqs: %w", err)
+		}
+		freqs[i] = f
+	}
+	return freqs, nil
+}
+
+// decodeV2 reads a version-2 lossless stream (magic+version already consumed).
+func decodeV2(r io.Reader) ([]float64, error) {
+	dm, count, err := readCommonRansHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	freqs, err := readRansFreqs(r)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRans(r, dm, count, freqs, 0)
+}
+
+// decodeV3 reads a version-3 quantized stream (magic+version already consumed).
+func decodeV3(r io.Reader) ([]float64, error) {
+	dm, count, err := readCommonRansHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	bitsByte, err := readByte(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading precision bits: %w", err)
+	}
+	freqs, err := readRansFreqs(r)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRans(r, dm, count, freqs, int(bitsByte))
+}
+
+// decodeRans is the shared body decoder for v2 (bits=0) and v3 (bits>0).
+// Payload conventions mirror gatherRans — see that function's doc comment.
+func decodeRans(r io.Reader, driftMode DriftMode, count uint64, freqs RansFreqs, bits int) ([]float64, error) {
+	// Read rANS stream.
+	ransLen, err := readUint32(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading rans length: %w", err)
+	}
+	ransStream := make([]byte, ransLen)
+	if ransLen > 0 {
+		if _, err := io.ReadFull(r, ransStream); err != nil {
+			return nil, fmt.Errorf("toroidzip: decode: reading rans stream: %w", err)
+		}
+	}
+
+	// Decode the class stream for indices [1, count).
+	classes, err := RansDecode(ransStream, freqs, int(count)-1)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: rans decode: %w", err)
+	}
+
+	// Slurp remaining bytes as the packed payload section.
+	payRaw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading payloads: %w", err)
+	}
+	pay := bytes.NewReader(payRaw)
+
+	values := make([]float64, count)
+	values[0], err = readFloat64(pay)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading anchor: %w", err)
+	}
+
+	var kp kahanProd
+	if driftMode == DriftCompensate {
+		kp = newKahanProd(values[0])
+	}
+
+	for i := 1; i < int(count); i++ {
+		class := RatioClass(classes[i-1])
+		switch class {
+		case ClassIdentity:
+			// No payload; decoder keeps prev unchanged (same as encoder).
+			values[i] = values[i-1]
+		case ClassNormal:
+			var ratio float64
+			if bits > 0 {
+				var sym uint32
+				switch QuantPayloadTier(bits) {
+				case 1:
+					b, err := readByte(pay)
+					if err != nil {
+						return nil, fmt.Errorf("toroidzip: decode: reading quantized symbol at %d: %w", i, err)
+					}
+					sym = uint32(b)
+				case 2:
+					s, err := readUint16(pay)
+					if err != nil {
+						return nil, fmt.Errorf("toroidzip: decode: reading quantized symbol at %d: %w", i, err)
+					}
+					sym = uint32(s)
+				default: // 4
+					s, err := readUint32(pay)
+					if err != nil {
+						return nil, fmt.Errorf("toroidzip: decode: reading quantized symbol at %d: %w", i, err)
+					}
+					sym = s
+				}
+				ratio = DequantizeRatio(sym, bits)
+			} else {
+				ratio, err = readFloat64(pay)
+				if err != nil {
+					return nil, fmt.Errorf("toroidzip: decode: reading normal ratio at %d: %w", i, err)
+				}
+			}
+			if driftMode == DriftCompensate {
+				values[i] = kp.multiply(ratio)
+			} else {
+				values[i] = values[i-1] * ratio
+			}
+		case ClassBoundaryZero, ClassBoundaryInf, ClassReanchor:
+			val, err := readFloat64(pay)
+			if err != nil {
+				return nil, fmt.Errorf("toroidzip: decode: reading verbatim at %d: %w", i, err)
+			}
+			values[i] = val
+			if driftMode == DriftCompensate {
+				kp = newKahanProd(val)
+			}
+		default:
+			return nil, fmt.Errorf("toroidzip: decode: unknown class %d at %d", class, i)
+		}
+	}
 	return values, nil
 }
 
@@ -298,4 +642,10 @@ func readUint64(r io.Reader) (uint64, error) {
 func readFloat64(r io.Reader) (float64, error) {
 	bits, err := readUint64(r)
 	return math.Float64frombits(bits), err
+}
+
+func readUint16(r io.Reader) (uint16, error) {
+	var buf [2]byte
+	_, err := io.ReadFull(r, buf[:])
+	return binary.LittleEndian.Uint16(buf[:]), err
 }
