@@ -39,9 +39,18 @@ type EncodeOptions struct {
 	// 0 means EntropyRaw (Milestone 1 baseline, no compression).
 	EntropyMode EntropyMode
 
-	// PrecisionBits is the log-space quantisation depth for EntropyQuantized.
-	// 0 means DefaultPrecisionBits.
+	// PrecisionBits is the log-space quantisation depth for EntropyQuantized
+	// and EntropyAdaptive. 0 means DefaultPrecisionBits. In EntropyAdaptive
+	// the value is capped at 16 (ClassNormal payloads are always uint16).
 	PrecisionBits int
+
+	// Tolerance is the maximum relative quantisation error for EntropyAdaptive.
+	// A ClassNormal ratio is stored as a uint16 symbol when
+	//   |DequantizeRatio(sym, bits) / ratio - 1| < Tolerance
+	// and as a ClassNormalExact float64 payload otherwise.
+	// Tolerance = 0 (default): all normals take the exact path — lossless-equivalent.
+	// Tolerance = math.MaxFloat64: all normals are quantised — matches v3 at bits≤16.
+	Tolerance float64
 }
 
 // Magic bytes identifying a ToroidZip stream.
@@ -52,6 +61,7 @@ const (
 	versionRaw       byte = 1 // EntropyRaw baseline
 	versionLossless  byte = 2 // EntropyLossless
 	versionQuantized byte = 3 // EntropyQuantized
+	versionAdaptive  byte = 4 // EntropyAdaptive (v4 hybrid)
 )
 
 // Encode compresses values into the ToroidZip format and writes to w.
@@ -69,6 +79,8 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 		return encodeLossless(values, w, opts)
 	case EntropyQuantized:
 		return encodeQuantized(values, w, opts)
+	case EntropyAdaptive:
+		return encodeAdaptive(values, w, opts)
 	default:
 		return fmt.Errorf("toroidzip: encode: unknown entropy mode %d", opts.EntropyMode)
 	}
@@ -334,6 +346,8 @@ func Decode(r io.Reader) ([]float64, error) {
 		return decodeV2(r)
 	case versionQuantized:
 		return decodeV3(r)
+	case versionAdaptive:
+		return decodeV4(r)
 	default:
 		return nil, fmt.Errorf("toroidzip: decode: unsupported version %d", ver)
 	}
@@ -552,6 +566,262 @@ func decodeRans(r io.Reader, driftMode DriftMode, count uint64, freqs RansFreqs,
 			if driftMode == DriftCompensate {
 				kp = newKahanProd(val)
 			}
+		default:
+			return nil, fmt.Errorf("toroidzip: decode: unknown class %d at %d", class, i)
+		}
+	}
+	return values, nil
+}
+
+// ============================================================
+// v4 adaptive stream (EntropyAdaptive)
+// ============================================================
+
+// gatherRans6 is the encoder first pass for EntropyAdaptive.
+// For each ClassNormal ratio it performs the per-ratio ε decision:
+//   - relative error of quantized symbol < opts.Tolerance → ClassNormal + uint16
+//   - otherwise                                           → ClassNormalExact + float64
+//
+// ClassNormal symbols are always uint16 (bits capped at 16).
+// All other classes follow the same payload rules as gatherRans.
+func gatherRans6(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
+	ri, dm := opts.ReanchorInterval, opts.DriftMode
+	bits := opts.PrecisionBits
+	if bits <= 0 || bits > 16 {
+		bits = 16
+	}
+	tol := opts.Tolerance
+
+	payloads = make([]byte, 0, len(values)*4)
+	payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[0]))
+	classes = make([]byte, 0, len(values)-1)
+
+	prev := values[0]
+	var kp kahanProd
+	if dm == DriftCompensate {
+		kp = newKahanProd(prev)
+	}
+
+	for i := 1; i < len(values); i++ {
+		if i%ri == 0 {
+			classes = append(classes, byte(ClassReanchor))
+			payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+			prev = values[i]
+			if dm == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
+			continue
+		}
+
+		ratio, class := computeRatio(values[i], prev)
+		if dm == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
+			ratio = float64(float32(ratio))
+			class = Classify(ratio)
+		}
+
+		switch class {
+		case ClassIdentity:
+			classes = append(classes, byte(ClassIdentity))
+			// no payload; prev stays unchanged
+
+		case ClassNormal:
+			sym := QuantizeRatio(ratio, bits)
+			dequant := DequantizeRatio(sym, bits)
+			var relErr float64
+			if ratio != 0 {
+				relErr = math.Abs(dequant/ratio - 1.0)
+			} else {
+				relErr = math.MaxFloat64 // zero ratio cannot be quantized; force exact path
+			}
+			if relErr < tol {
+				// Quantized path: compact uint16 symbol.
+				classes = append(classes, byte(ClassNormal))
+				payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym))
+				ratio = dequant // encoder tracks dequantized ratio for drift
+			} else {
+				// Exact fallback: full float64, no information loss.
+				classes = append(classes, byte(ClassNormalExact))
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
+				// ratio unchanged — encoder and decoder both use the original float64
+			}
+			if dm == DriftCompensate {
+				prev = kp.multiply(ratio)
+			} else {
+				prev = prev * ratio
+			}
+
+		case ClassBoundaryZero, ClassBoundaryInf:
+			classes = append(classes, byte(class))
+			payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+			prev = values[i]
+			if dm == DriftCompensate {
+				kp = newKahanProd(prev)
+			}
+		}
+	}
+	return classes, payloads
+}
+
+// writeRansBody6 writes ransFreqs6(24) + ransLen(4) + ransStream + payloads.
+func writeRansBody6(w io.Writer, classes []byte, freqs RansFreqs6, payloads []byte) error {
+	for _, f := range freqs {
+		if err := writeUint32(w, f); err != nil {
+			return err
+		}
+	}
+	rs := RansEncode6(classes, freqs)
+	if err := writeUint32(w, uint32(len(rs))); err != nil {
+		return err
+	}
+	if _, err := w.Write(rs); err != nil {
+		return err
+	}
+	_, err := w.Write(payloads)
+	return err
+}
+
+// encodeAdaptive writes the version-4 adaptive stream.
+// Header: magic(4) + version=4(1) + driftMode(1) + reanchorInterval(4) +
+//
+//	count(8) + precisionBits(1) + ransFreqs6(24) = 43 bytes.
+//
+// Body: [ransLen(4)][ransStream][anchor float64][per-event payloads].
+// ClassNormal payload: uint16 (2 bytes). ClassNormalExact payload: float64 (8 bytes).
+func encodeAdaptive(values []float64, w io.Writer, opts EncodeOptions) error {
+	bits := opts.PrecisionBits
+	if bits <= 0 || bits > 16 {
+		bits = 16
+	}
+	classes, payloads := gatherRans6(values, opts)
+	freqs := RansCountFreqs6(classes)
+	if _, err := w.Write(magic[:]); err != nil {
+		return err
+	}
+	if err := writeByte(w, versionAdaptive); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(opts.DriftMode)); err != nil {
+		return err
+	}
+	if err := writeUint32(w, uint32(opts.ReanchorInterval)); err != nil {
+		return err
+	}
+	if err := writeUint64(w, uint64(len(values))); err != nil {
+		return err
+	}
+	if err := writeByte(w, byte(bits)); err != nil {
+		return err
+	}
+	return writeRansBody6(w, classes, freqs, payloads)
+}
+
+// readRansFreqs6 reads the 6-entry frequency table (24 bytes) for v4.
+func readRansFreqs6(r io.Reader) (RansFreqs6, error) {
+	var freqs RansFreqs6
+	for i := range freqs {
+		f, err := readUint32(r)
+		if err != nil {
+			return freqs, fmt.Errorf("toroidzip: decode: reading rans6 freqs: %w", err)
+		}
+		freqs[i] = f
+	}
+	return freqs, nil
+}
+
+// decodeV4 reads a version-4 adaptive stream (magic+version already consumed).
+func decodeV4(r io.Reader) ([]float64, error) {
+	dm, count, err := readCommonRansHeader(r)
+	if err != nil {
+		return nil, err
+	}
+	bitsByte, err := readByte(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading precision bits: %w", err)
+	}
+	freqs, err := readRansFreqs6(r)
+	if err != nil {
+		return nil, err
+	}
+	return decodeRans6(r, dm, count, freqs, int(bitsByte))
+}
+
+// decodeRans6 is the body decoder for v4 adaptive streams.
+// ClassNormal: read uint16 symbol, dequantize.
+// ClassNormalExact: read float64 ratio verbatim.
+// All other classes: same payload rules as decodeRans.
+func decodeRans6(r io.Reader, driftMode DriftMode, count uint64, freqs RansFreqs6, bits int) ([]float64, error) {
+	ransLen, err := readUint32(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading rans length: %w", err)
+	}
+	ransStream := make([]byte, ransLen)
+	if ransLen > 0 {
+		if _, err := io.ReadFull(r, ransStream); err != nil {
+			return nil, fmt.Errorf("toroidzip: decode: reading rans stream: %w", err)
+		}
+	}
+
+	classes, err := RansDecode6(ransStream, freqs, int(count)-1)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: rans6 decode: %w", err)
+	}
+
+	payRaw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading payloads: %w", err)
+	}
+	pay := bytes.NewReader(payRaw)
+
+	values := make([]float64, count)
+	values[0], err = readFloat64(pay)
+	if err != nil {
+		return nil, fmt.Errorf("toroidzip: decode: reading anchor: %w", err)
+	}
+
+	var kp kahanProd
+	if driftMode == DriftCompensate {
+		kp = newKahanProd(values[0])
+	}
+
+	for i := 1; i < int(count); i++ {
+		class := RatioClass(classes[i-1])
+		switch class {
+		case ClassIdentity:
+			values[i] = values[i-1]
+
+		case ClassNormal:
+			sym16, err := readUint16(pay)
+			if err != nil {
+				return nil, fmt.Errorf("toroidzip: decode: reading adaptive symbol at %d: %w", i, err)
+			}
+			ratio := DequantizeRatio(uint32(sym16), bits)
+			if driftMode == DriftCompensate {
+				values[i] = kp.multiply(ratio)
+			} else {
+				values[i] = values[i-1] * ratio
+			}
+
+		case ClassNormalExact:
+			ratio, err := readFloat64(pay)
+			if err != nil {
+				return nil, fmt.Errorf("toroidzip: decode: reading exact ratio at %d: %w", i, err)
+			}
+			if driftMode == DriftCompensate {
+				values[i] = kp.multiply(ratio)
+			} else {
+				values[i] = values[i-1] * ratio
+			}
+
+		case ClassBoundaryZero, ClassBoundaryInf, ClassReanchor:
+			val, err := readFloat64(pay)
+			if err != nil {
+				return nil, fmt.Errorf("toroidzip: decode: reading verbatim at %d: %w", i, err)
+			}
+			values[i] = val
+			if driftMode == DriftCompensate {
+				kp = newKahanProd(val)
+			}
+
 		default:
 			return nil, fmt.Errorf("toroidzip: decode: unknown class %d at %d", class, i)
 		}

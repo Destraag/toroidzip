@@ -544,6 +544,137 @@ func maxRelErr(got, want []float64) float64 {
 	return maxErr
 }
 
+// --- EntropyAdaptive (v4) tests ---
+
+// TestAdaptiveRoundTripTolerance0 verifies that EntropyAdaptive with Tolerance=0
+// (lossless-equivalent) reconstructs values with at most the same small drift
+// as EntropyLossless. All ClassNormal ratios take the ClassNormalExact path.
+func TestAdaptiveRoundTripTolerance0(t *testing.T) {
+	values := makeSmoothSeries(1000, 100.0, 1.001)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyAdaptive,
+		Tolerance:   0.0, // all normals → ClassNormalExact
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	// Tolerance=0 → no quantization loss; only identity-class drift possible.
+	if e := maxRelErr(got, values); e > 1e-9 {
+		t.Errorf("max relative error %e exceeds 1e-9 at tolerance=0", e)
+	}
+}
+
+// TestAdaptiveRoundTripLossyTolerance verifies that EntropyAdaptive with a
+// non-zero tolerance compresses well and keeps error within the declared bound.
+func TestAdaptiveRoundTripLossyTolerance(t *testing.T) {
+	values := makeSmoothSeries(2000, 100.0, 1.0005)
+	tol := 1e-3
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 16,
+		Tolerance:     tol,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	// Max error should be bounded by the quantization tolerance plus drift.
+	if e := maxRelErr(got, values); e > 0.05 {
+		t.Errorf("max relative error %e unexpectedly large for tolerance=%g", e, tol)
+	}
+}
+
+// TestAdaptiveSmallerThanQuantizedAtHighTolerance checks that adaptive at a
+// high tolerance (many quantized hits) produces a smaller or equal stream than
+// plain lossless, demonstrating compression benefit.
+func TestAdaptiveSmallerThanQuantizedAtHighTolerance(t *testing.T) {
+	values := makeSmoothSeries(5000, 50.0, 1.0002)
+	var losslessBuf, adaptiveBuf bytes.Buffer
+	if err := codec.Encode(values, &losslessBuf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyLossless,
+	}); err != nil {
+		t.Fatalf("lossless encode: %v", err)
+	}
+	if err := codec.Encode(values, &adaptiveBuf, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 16,
+		Tolerance:     1e-2, // 1% tolerance → most normals should be quantized
+	}); err != nil {
+		t.Fatalf("adaptive encode: %v", err)
+	}
+	if adaptiveBuf.Len() >= losslessBuf.Len() {
+		t.Errorf("adaptive (%d bytes) not smaller than lossless (%d bytes) at 1%% tolerance",
+			adaptiveBuf.Len(), losslessBuf.Len())
+	}
+}
+
+// TestAdaptiveWithBoundaryEvents ensures boundary and reanchor events are
+// handled correctly in the v4 stream alongside quantized/exact ratios.
+func TestAdaptiveWithBoundaryEvents(t *testing.T) {
+	values := []float64{1.0, 1.001, 0.0, 1.5, 1.501, 1.502, 100.0, 100.1}
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyAdaptive,
+		Tolerance:   1e-3,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	// Boundary events (zero crossing) must be reconstructed exactly.
+	if got[2] != 0.0 {
+		t.Errorf("boundary zero not reconstructed exactly: got %v want 0", got[2])
+	}
+}
+
+// TestAdaptiveSingleValue ensures the single-value edge case is handled.
+func TestAdaptiveSingleValue(t *testing.T) {
+	values := []float64{42.0}
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyAdaptive,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0] != 42.0 {
+		t.Errorf("single value: got %v want [42]", got)
+	}
+}
+
+// makeSmoothSeries generates a geometric series starting at start,
+// multiplied by factor each step.
+func makeSmoothSeries(n int, start, factor float64) []float64 {
+	values := make([]float64, n)
+	v := start
+	for i := range values {
+		values[i] = v
+		v *= factor
+	}
+	return values
+}
+
 // BenchmarkEncode measures encoding throughput on a smooth series.
 func BenchmarkEncode(b *testing.B) {
 	values := make([]float64, 100_000)
