@@ -165,16 +165,27 @@ func runAnalyze(args []string) error {
 		return fmt.Errorf("reading input: %w", err)
 	}
 
-	// Precision analysis.
+	// Precision analysis (pass all values; AnalyzePrecision handles classification).
 	precRpt := codec.AnalyzePrecision(values)
 	fmt.Println("=== Precision Analysis ===")
 	fmt.Printf("  values      : %d\n", len(values))
 	fmt.Printf("  coverage    : %.2f%%\n", precRpt.Coverage*100)
 	fmt.Printf("  recommended : %d bits (%d sig figs)\n",
 		precRpt.RecommendedBits, precRpt.RecommendedSigFigs)
+	fmt.Printf("  note        : bits rounded to tier ceiling (u8=8, u16=16, u32=30);\n")
+	fmt.Printf("                within a tier higher precision is free\n")
 	fmt.Println("  bits  entropy(bits/sym)")
 	for _, b := range []int{4, 8, 12, 16, 20, 24, 28, 30} {
 		fmt.Printf("  %4d  %.4f\n", b, precRpt.Entropy[b])
+	}
+
+	// Lossless viability warning based on identity fraction.
+	fmt.Printf("\n  identity fraction : %.2f%% of ratios within IdentityEpsilon (%.0e)\n",
+		precRpt.IdentityFraction*100, codec.IdentityEpsilon)
+	if precRpt.IdentityFraction < 0.05 {
+		fmt.Printf("  WARNING: lossless mode will barely compress this data (<5%% identity events).\n")
+		fmt.Printf("           Consider --entropy-mode quantized --sig-figs %d instead.\n",
+			precRpt.RecommendedSigFigs)
 	}
 
 	// Drift analysis.
@@ -191,12 +202,14 @@ func runAnalyze(args []string) error {
 		fmt.Printf("  %-8d  %-4s  %-12.4e  %-12.4e  %.2f%%\n",
 			row.Interval, modeStr, row.MaxRelErr, row.MeanRelErr, row.AnchorOverhead*100)
 	}
-	recommendedModeStr := "A"
+	recommendedModeStr := "A (Reanchor)"
 	if driftRpt.RecommendedMode == codec.DriftCompensate {
-		recommendedModeStr = "B"
+		recommendedModeStr = "B (Compensate)"
 	}
 	fmt.Printf("  recommended : mode %s, interval %d\n",
 		recommendedModeStr, driftRpt.RecommendedInterval)
+	fmt.Printf("  speed note  : mode A (Reanchor) encodes ~3x faster than mode B (Compensate)\n")
+	fmt.Printf("                at identical output size. Use A for throughput-sensitive workloads.\n")
 	return nil
 }
 

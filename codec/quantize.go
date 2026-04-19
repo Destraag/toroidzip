@@ -71,10 +71,11 @@ type PrecisionReport struct {
 	// distribution at b-bit precision, for b ∈ [1..30]. Entropy[0] is unused.
 	Entropy [31]float64
 
-	// RecommendedBits is the entropy-curve knee: the largest b where the
-	// marginal gain from b−1 → b is still ≥ 5 % of the total entropy range
-	// (Entropy[30] − Entropy[1]). Returns 1 when the data is essentially
-	// constant, 30 when there is fine structure at all precision levels.
+	// RecommendedBits is the entropy-curve knee, then rounded UP to the top
+	// of its payload tier (8, 16, or 30). Within a tier all bit depths produce
+	// the same encoded size, so higher precision is always free.
+	// Returns 1 when the data is essentially constant, 30 when there is fine
+	// structure at all precision levels.
 	RecommendedBits int
 
 	// RecommendedSigFigs is the significant-figure count implied by
@@ -84,6 +85,12 @@ type PrecisionReport struct {
 	// Coverage is the fraction of ratios that fall within the quantiser range
 	// [2^−QuantMaxLog2R, 2^QuantMaxLog2R] without clamping.
 	Coverage float64
+
+	// IdentityFraction is the fraction of input ratios that fall within
+	// IdentityEpsilon of 1.0 (i.e. would be classified as ClassIdentity).
+	// When this is low (< ~5%), lossless mode gains little over uncompressed
+	// because almost no payload bytes are eliminated.
+	IdentityFraction float64
 }
 
 // clampBits restricts precision bits to the valid range [1, 30].
@@ -157,7 +164,26 @@ func AnalyzePrecision(ratios []float64) PrecisionReport {
 			}
 		}
 	}
+	// Round up to the ceiling of the payload tier: within a tier all bit
+	// depths encode to the same byte count, so extra precision is free.
+	switch QuantPayloadTier(rpt.RecommendedBits) {
+	case 1: // u8 tier: bits 1–8
+		rpt.RecommendedBits = 8
+	case 2: // u16 tier: bits 9–16
+		rpt.RecommendedBits = 16
+	default: // u32 tier: bits 17–30
+		rpt.RecommendedBits = 30
+	}
 	rpt.RecommendedSigFigs = BitsToSigFigs(rpt.RecommendedBits)
+
+	// Identity fraction: how many ratios are within IdentityEpsilon of 1.0.
+	var identityCount int
+	for _, r := range ratios {
+		if r > 0 && math.Abs(r-1.0) < IdentityEpsilon {
+			identityCount++
+		}
+	}
+	rpt.IdentityFraction = float64(identityCount) / float64(len(ratios))
 
 	return rpt
 }

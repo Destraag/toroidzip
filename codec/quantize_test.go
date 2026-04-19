@@ -127,8 +127,10 @@ func TestAnalyzePrecisionConstant(t *testing.T) {
 			t.Errorf("Entropy[%d] = %g, want ~0 for constant data", b, rpt.Entropy[b])
 		}
 	}
-	if rpt.RecommendedBits != 1 {
-		t.Errorf("RecommendedBits = %d, want 1 for constant data", rpt.RecommendedBits)
+	// For constant data the knee is at bit 1, which sits in the u8 tier.
+	// The tier-ceiling rule bumps it to 8 — max free precision in that tier.
+	if rpt.RecommendedBits != 8 {
+		t.Errorf("RecommendedBits = %d, want 8 (u8 tier ceiling) for constant data", rpt.RecommendedBits)
 	}
 	if rpt.Coverage < 1.0-1e-9 {
 		t.Errorf("Coverage = %f, want 1.0 for ratio=1.0", rpt.Coverage)

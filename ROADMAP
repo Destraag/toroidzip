@@ -69,6 +69,19 @@ Tasks:
 - [ ] Run harness with external tools installed; record results
 - [ ] Document per-class winner and margin in ROADMAP
 
+### Analyze improvements (from M3 findings)
+
+Applied M3 benchmark learnings directly to the `analyze` subcommand:
+- [x] Tier-aware precision: `RecommendedBits` now bumped to tier ceiling (u8→8,
+      u16→16, u32→30). Within a tier all bit depths cost the same encoded bytes,
+      so higher precision is free. (e.g. 6sf=20 bits → bumped to 30 bits free)
+- [x] Identity fraction: `PrecisionReport.IdentityFraction` reports what fraction
+      of ratios fall within `IdentityEpsilon`. CLI warns when < 5%, since lossless
+      mode gains little on smooth data where almost no payload bytes are omitted.
+- [x] DriftMode throughput note: `analyze` output now shows that mode A (Reanchor)
+      is ~3× faster than mode B (Compensate) at identical output size — confirmed
+      by M3. Prefer A for throughput-sensitive applications.
+
 ### Milestone 5 — Adaptive entropy model (ongoing refinement)
 Version 4 stream: per-ratio hybrid mode. Justified by M3/M4 benchmark data.
 Not a hard deliverable — iterated as findings accumulate.

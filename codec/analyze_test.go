@@ -204,3 +204,65 @@ func TestAnalyzeDriftInvalidInterval(t *testing.T) {
 		t.Errorf("expected 0 rows for invalid intervals, got %d", len(rpt.Rows))
 	}
 }
+
+// TestAnalyzePrecisionTierCeiling verifies that RecommendedBits is always
+// rounded up to the ceiling of its payload tier (8, 16, or 30), so that
+// callers get the maximum free precision within the same byte cost.
+func TestAnalyzePrecisionTierCeiling(t *testing.T) {
+	// Any data should produce a RecommendedBits at a tier boundary.
+	datasets := []struct {
+		name   string
+		ratios []float64
+	}{
+		{"constant", func() []float64 {
+			r := make([]float64, 1000)
+			for i := range r {
+				r[i] = 1.0
+			}
+			return r
+		}()},
+		{"smooth", makeLogNormalRatios(5000, 0.01)},
+		{"wide", makeLogNormalRatios(5000, 2.0)},
+	}
+
+	validCeilings := map[int]bool{8: true, 16: true, 30: true}
+	for _, ds := range datasets {
+		rpt := codec.AnalyzePrecision(ds.ratios)
+		if !validCeilings[rpt.RecommendedBits] {
+			t.Errorf("%s: RecommendedBits=%d is not a tier ceiling (want 8, 16, or 30)",
+				ds.name, rpt.RecommendedBits)
+		}
+		// RecommendedSigFigs must be consistent with the (possibly elevated) bits.
+		wantSF := codec.BitsToSigFigs(rpt.RecommendedBits)
+		if rpt.RecommendedSigFigs != wantSF {
+			t.Errorf("%s: RecommendedSigFigs=%d, want %d (from %d bits)",
+				ds.name, rpt.RecommendedSigFigs, wantSF, rpt.RecommendedBits)
+		}
+	}
+}
+
+// TestAnalyzePrecisionIdentityFraction verifies IdentityFraction is in [0,1]
+// and is near 1.0 for constant data and near 0 for highly variable data.
+func TestAnalyzePrecisionIdentityFraction(t *testing.T) {
+	// Constant data: all ratios == 1.0 → all within IdentityEpsilon.
+	constant := make([]float64, 1000)
+	for i := range constant {
+		constant[i] = 1.0
+	}
+	rptConst := codec.AnalyzePrecision(constant)
+	if rptConst.IdentityFraction < 0.99 {
+		t.Errorf("constant data: IdentityFraction=%.4f, want ~1.0", rptConst.IdentityFraction)
+	}
+
+	// Highly variable data: very few ratios within 1e-9 of 1.0.
+	variable := makeLogNormalRatios(5000, 1.0)
+	rptVar := codec.AnalyzePrecision(variable)
+	if rptVar.IdentityFraction < 0 || rptVar.IdentityFraction > 1 {
+		t.Errorf("variable data: IdentityFraction=%.4f out of [0,1]", rptVar.IdentityFraction)
+	}
+	// With σ=1.0 log-normal variation, near-zero identity fraction is expected.
+	if rptVar.IdentityFraction > 0.1 {
+		t.Errorf("variable data: IdentityFraction=%.4f, want < 0.1 for high-variation data",
+			rptVar.IdentityFraction)
+	}
+}
