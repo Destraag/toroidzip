@@ -465,8 +465,12 @@ func TestQuantizedStreamSmaller(t *testing.T) {
 		values[i] = v
 	}
 	var v1Buf, v3Buf bytes.Buffer
-	codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw})
-	codec.Encode(values, &v3Buf, codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8})
+	if err := codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
+		t.Fatalf("encode raw: %v", err)
+	}
+	if err := codec.Encode(values, &v3Buf, codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8}); err != nil {
+		t.Fatalf("encode quantized: %v", err)
+	}
 	if v3Buf.Len() >= v1Buf.Len() {
 		t.Errorf("quantized stream (%d bytes) not smaller than raw (%d bytes)", v3Buf.Len(), v1Buf.Len())
 	}
