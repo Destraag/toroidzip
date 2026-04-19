@@ -190,6 +190,47 @@ func TestDecodeErrors(t *testing.T) {
 			t.Fatal("expected error on truncated stream")
 		}
 	})
+
+	// Truncated v2 stream: encode lossless then truncate at various points.
+	t.Run("truncated v2 header", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := codec.Encode([]float64{1.0, 2.0, 3.0}, &buf, codec.EncodeOptions{
+			EntropyMode: codec.EntropyLossless,
+		}); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		data := buf.Bytes()
+		// Try decoding truncated at several points into the header (past magic+version).
+		for _, cutAt := range []int{6, 8, 12} {
+			if cutAt >= len(data) {
+				continue
+			}
+			_, err := codec.Decode(bytes.NewReader(data[:cutAt]))
+			if err == nil {
+				t.Errorf("expected error decoding v2 truncated at byte %d", cutAt)
+			}
+		}
+	})
+
+	// Truncated v3 stream.
+	t.Run("truncated v3 header", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := codec.Encode([]float64{1.0, 2.0, 3.0}, &buf, codec.EncodeOptions{
+			EntropyMode: codec.EntropyQuantized, PrecisionBits: 8,
+		}); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		data := buf.Bytes()
+		for _, cutAt := range []int{6, 8, 12, 14} {
+			if cutAt >= len(data) {
+				continue
+			}
+			_, err := codec.Decode(bytes.NewReader(data[:cutAt]))
+			if err == nil {
+				t.Errorf("expected error decoding v3 truncated at byte %d", cutAt)
+			}
+		}
+	})
 }
 
 // TestEncodeEmptyInput verifies Encode rejects empty slices.

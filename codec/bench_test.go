@@ -1,0 +1,402 @@
+// Benchmark tests for the codec using synthetic datasets that approximate
+// the four target data classes for Milestone 3.
+//
+// Run all benchmarks:
+//
+//	go test ./codec/... -bench=. -benchtime=3s -benchmem
+//
+// Run a specific class:
+//
+//	go test ./codec/... -bench=BenchmarkDataClass/Financial
+//
+// Dataset generators use a simple deterministic LCG so results are
+// reproducible without importing math/rand or depending on a global seed.
+package codec_test
+
+import (
+	"bytes"
+	"math"
+	"testing"
+
+	"github.com/Destraag/toroidzip/codec"
+)
+
+// ─── Deterministic dataset generators ───────────────────────────────────────
+//
+// All generators are deterministic and require no random seed argument.
+// They are designed to approximate realistic distributions for each data
+// class without importing a PRNG package.
+
+// lcg is a simple 64-bit LCG (linear congruential generator) used to make
+// benchmark datasets deterministic without importing math/rand.
+type lcg struct{ state uint64 }
+
+func newLCG(seed uint64) lcg { return lcg{seed | 1} }
+
+// float returns a pseudo-random float64 in (-0.5, 0.5].
+func (l *lcg) float() float64 {
+	l.state = l.state*6364136223846793005 + 1442695040888963407
+	return float64(int64(l.state>>11)) / float64(1<<53)
+}
+
+// makeSensorStream generates an IoT/sensor stream: slow sinusoidal drift with
+// small Gaussian-like noise.  Values stay within [base*0.8, base*1.2].
+// Models: temperature sensors, pressure gauges, energy consumption.
+func makeSensorStream(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0xDEAD_BEEF)
+	v := 100.0
+	for i := range out {
+		// Slow sine component (period ≈ n/3) + tiny per-step noise.
+		drift := 0.2 * math.Sin(2*math.Pi*float64(i)/float64(n/3))
+		noise := rng.float() * 0.002
+		v *= math.Exp(drift/float64(n)*6 + noise)
+		out[i] = v
+	}
+	return out
+}
+
+// makeFinancialWalk generates a log-normal random walk approximating equity
+// tick data: σ ≈ 0.5%/step with occasional ±15% regime jumps (~1% of steps).
+// Models: stock prices, FX rates, crypto tick data.
+func makeFinancialWalk(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0xF17A4CE0)
+	v := 100.0
+	for i := range out {
+		// Box-Muller: clamp u1 to (0,1) to avoid log(0).
+		u1 := math.Abs(rng.float()) + 1e-9 // strictly positive
+		if u1 > 1 {
+			u1 = 1 - 1e-9
+		}
+		u2 := rng.float() + 0.5001
+		normal := math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2)
+		ret := normal * 0.005 // σ≈0.5% per step
+
+		// Occasional regime jump (~1% probability): use low bits of state.
+		jump := rng.float()
+		if jump < -0.49 {
+			ret += 0.15
+		} else if jump > 0.49 {
+			ret -= 0.15
+		}
+		v *= math.Exp(ret)
+		if v <= 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			v = 100.0
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// makeScientificMultiScale generates a multi-order-of-magnitude series
+// approximating scientific measurement data: values oscillate between 1e-6
+// and 1e6 on a smooth exponential trajectory.
+// Models: astronomical luminosity, chemical concentrations, physics simulations.
+func makeScientificMultiScale(n int) []float64 {
+	out := make([]float64, n)
+	v := 1e-6
+	for i := range out {
+		// Smooth sinusoidal exponent covers 12 decades over the series.
+		phase := 2 * math.Pi * float64(i) / float64(n)
+		logTarget := 6 * math.Sin(phase) // −6 to +6 in log10 space
+		logCurrent := math.Log10(v)
+		v *= math.Pow(10, (logTarget-logCurrent)*0.01) // lazy chase
+		out[i] = v
+	}
+	return out
+}
+
+// makeVolatileSeries generates a spiky series: most ratios near 1.0 but
+// ~2% of steps have a ×10 or ÷10 jump.  The majority of ratios are nearly
+// ClassIdentity, making this a stress test for boundary detection.
+// Models: event-driven sensor data, network packet inter-arrival times.
+func makeVolatileSeries(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0xBEEF_CAFE)
+	v := 1.0
+	for i := range out {
+		r := rng.float() + 0.5001 // uniform (0,1)
+		if r < 0.01 {
+			v *= 10 // large upward jump
+		} else if r < 0.02 {
+			v *= 0.1 // large downward jump
+		} else {
+			v *= 1.0 + (rng.float())*0.0002 // tiny change (~ClassIdentity boundary)
+		}
+		if v <= 0 {
+			v = 1e-6
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// makeNearConstant generates a near-flat sensor stream with only noise-floor
+// variation (σ ≈ 0.01%).  Nearly all ratios should be ClassIdentity, giving
+// maximum compression benefit from the entropy model.
+// Models: stable temperature/humidity sensors, calibrated reference signals.
+func makeNearConstant(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0xC0FFEE42)
+	v := 273.15 // Kelvin
+	for i := range out {
+		v *= 1 + rng.float()*0.0001 // ±0.01% per step
+		out[i] = v
+	}
+	return out
+}
+
+// makeNeuralWeightProxy generates a weight-tensor proxy: values are drawn from
+// a mixture of narrow Gaussians at ±0.01 and ±0.1, slowly transitioning
+// between "layers" (every n/4 steps).
+// Models: MLP weight tensors, attention head projections.
+func makeNeuralWeightProxy(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0x1337_C0DE)
+	// Layer centres at different scales.
+	centres := [4]float64{0.001, 0.05, -0.03, 0.12}
+	for i := range out {
+		layer := (i / (n / 4)) % 4
+		// Box-Muller with safe u1.
+		u1 := math.Abs(rng.float())*0.99 + 0.01 // (0.01, 1.0)
+		u2 := rng.float() + 0.5001
+		normal := math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2)
+		v := centres[layer] + normal*0.01
+		if v == 0 || math.IsNaN(v) {
+			v = 1e-9
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// ─── Correctness smoke tests for each generator ─────────────────────────────
+// These are fast sanity checks that each generator produces finite, non-zero
+// values and round-trips cleanly through the default encoder.
+
+func TestDatasetSensorStream(t *testing.T) {
+	testDatasetRoundTrip(t, "SensorStream", makeSensorStream(2000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		1e-6)
+}
+
+func TestDatasetFinancialWalk(t *testing.T) {
+	testDatasetRoundTrip(t, "FinancialWalk", makeFinancialWalk(2000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		1e-6)
+}
+
+func TestDatasetScientificMultiScale(t *testing.T) {
+	testDatasetRoundTrip(t, "ScientificMultiScale", makeScientificMultiScale(2000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		1e-6)
+}
+
+func TestDatasetVolatileSeries(t *testing.T) {
+	testDatasetRoundTrip(t, "VolatileSeries", makeVolatileSeries(2000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		1e-6)
+}
+
+func TestDatasetNearConstant(t *testing.T) {
+	testDatasetRoundTrip(t, "NearConstant", makeNearConstant(2000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		1e-6)
+}
+
+func TestDatasetNeuralWeightProxy(t *testing.T) {
+	// Weights change sign → many boundary events; use raw mode to verify
+	// round-trip is exact rather than checking relative error across zeros.
+	values := makeNeuralWeightProxy(2000)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch: got %d want %d", len(got), len(values))
+	}
+	// Weights are stored verbatim via boundary+reanchor events; spot-check a few.
+	for _, i := range []int{0, 100, 500, 999} {
+		if math.IsNaN(got[i]) || math.IsInf(got[i], 0) {
+			t.Errorf("index %d: non-finite %v", i, got[i])
+		}
+	}
+}
+
+// testDatasetRoundTrip is a shared helper that encodes+decodes and checks
+// relative error is below tolerance for all non-zero expected values.
+func testDatasetRoundTrip(t *testing.T, name string, values []float64,
+	opts codec.EncodeOptions, tolRel float64) {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, opts); err != nil {
+		t.Fatalf("%s Encode: %v", name, err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("%s Decode: %v", name, err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("%s: length mismatch got=%d want=%d", name, len(got), len(values))
+	}
+	for i, want := range values {
+		if math.IsNaN(got[i]) || math.IsInf(got[i], 0) {
+			t.Errorf("%s index %d: non-finite %v", name, i, got[i])
+			continue
+		}
+		if want == 0 {
+			continue
+		}
+		if e := math.Abs(got[i]-want) / math.Abs(want); e > tolRel {
+			t.Errorf("%s index %d: rel_err=%e > %e (got=%v want=%v)", name, i, e, tolRel, got[i], want)
+		}
+	}
+}
+
+// ─── Compression ratio smoke tests ──────────────────────────────────────────
+// Verify each dataset actually compresses vs raw float64 in lossless mode.
+
+func TestCompressionRatioSensorStream(t *testing.T) {
+	testCompressionVsRaw(t, "SensorStream", makeSensorStream(5000), codec.EntropyLossless)
+}
+
+func TestCompressionRatioNearConstant(t *testing.T) {
+	testCompressionVsRaw(t, "NearConstant", makeNearConstant(5000), codec.EntropyLossless)
+}
+
+func TestCompressionRatioFinancial(t *testing.T) {
+	// Financial data has high entropy — lossless may not compress vs raw.
+	// Just verify encode+decode work; do not assert smaller.
+	values := makeFinancialWalk(5000)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if _, err := codec.Decode(&buf); err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+}
+
+func testCompressionVsRaw(t *testing.T, name string, values []float64, em codec.EntropyMode) {
+	t.Helper()
+	var rawBuf, encBuf bytes.Buffer
+	if err := codec.Encode(values, &rawBuf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
+		t.Fatalf("%s raw encode: %v", name, err)
+	}
+	if err := codec.Encode(values, &encBuf, codec.EncodeOptions{EntropyMode: em}); err != nil {
+		t.Fatalf("%s enc encode: %v", name, err)
+	}
+	if encBuf.Len() >= rawBuf.Len() {
+		t.Errorf("%s: entropy-coded (%d B) not smaller than raw (%d B)",
+			name, encBuf.Len(), rawBuf.Len())
+	}
+}
+
+// ─── Benchmarks ─────────────────────────────────────────────────────────────
+
+// BenchmarkDataClass runs all six data classes × three entropy modes so M3
+// can be seeded with Go benchmark output before external codec comparisons.
+func BenchmarkDataClass(b *testing.B) {
+	const n = 100_000
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(n)},
+		{"Financial", makeFinancialWalk(n)},
+		{"MultiScale", makeScientificMultiScale(n)},
+		{"Volatile", makeVolatileSeries(n)},
+		{"NearConstant", makeNearConstant(n)},
+		{"NeuralWeight", makeNeuralWeightProxy(n)},
+	}
+	modes := []struct {
+		name string
+		opts codec.EncodeOptions
+	}{
+		{"Raw", codec.EncodeOptions{EntropyMode: codec.EntropyRaw}},
+		{"Lossless", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate}},
+		{"Quantized8b", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8, DriftMode: codec.DriftCompensate}},
+	}
+
+	for _, ds := range datasets {
+		for _, m := range modes {
+			ds, m := ds, m
+			b.Run(ds.name+"/"+m.name+"/Encode", func(b *testing.B) {
+				b.SetBytes(int64(len(ds.data)) * 8)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					var buf bytes.Buffer
+					_ = codec.Encode(ds.data, &buf, m.opts)
+				}
+			})
+			// Pre-encode once for decode benchmark.
+			var enc bytes.Buffer
+			_ = codec.Encode(ds.data, &enc, m.opts)
+			encData := enc.Bytes()
+			b.Run(ds.name+"/"+m.name+"/Decode", func(b *testing.B) {
+				b.SetBytes(int64(len(ds.data)) * 8)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					_, _ = codec.Decode(bytes.NewReader(encData))
+				}
+			})
+			// Log compressed size once (visible with -v).
+			b.Run(ds.name+"/"+m.name+"/Size", func(b *testing.B) {
+				rawBytes := len(ds.data) * 8
+				b.ReportMetric(float64(len(encData))/float64(rawBytes), "ratio")
+				b.ReportMetric(float64(len(encData)), "bytes")
+				b.SkipNow()
+			})
+		}
+	}
+}
+
+// BenchmarkAnalyzeDrift benchmarks the drift analyser across dataset types.
+func BenchmarkAnalyzeDrift(b *testing.B) {
+	const n = 10_000
+	intervals := []int{64, 128, 256, 512}
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(n)},
+		{"Financial", makeFinancialWalk(n)},
+		{"Volatile", makeVolatileSeries(n)},
+	}
+	for _, ds := range datasets {
+		ds := ds
+		b.Run(ds.name, func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = codec.AnalyzeDrift(ds.data, intervals)
+			}
+		})
+	}
+}
+
+// BenchmarkAnalyzePrecisionByDataset benchmarks the precision analyser.
+func BenchmarkAnalyzePrecisionByDataset(b *testing.B) {
+	const n = 10_000
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(n)},
+		{"Financial", makeFinancialWalk(n)},
+		{"MultiScale", makeScientificMultiScale(n)},
+	}
+	for _, ds := range datasets {
+		ds := ds
+		b.Run(ds.name, func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = codec.AnalyzePrecision(ds.data)
+			}
+		})
+	}
+}

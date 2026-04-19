@@ -208,6 +208,10 @@ func TestSigFigsToBitsClamped(t *testing.T) {
 	if high > 30 {
 		t.Errorf("SigFigsToBits(99) = %d, want <= 30", high)
 	}
+	// n=9 should clamp to 30 (formula gives B=32 without cap).
+	if b := codec.SigFigsToBits(9); b != 30 {
+		t.Errorf("SigFigsToBits(9) = %d, want 30 (clamped)", b)
+	}
 }
 
 // TestBitsToSigFigsMonotonic verifies that more bits means >= sig figs.
@@ -258,14 +262,6 @@ func BenchmarkQuantizeRatio(b *testing.B) {
 		for _, r := range ratios {
 			_ = codec.QuantizeRatio(r, 8)
 		}
-	}
-}
-
-func BenchmarkAnalyzePrecision(b *testing.B) {
-	ratios := makeLogNormalRatios(10000, 0.5)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = codec.AnalyzePrecision(ratios)
 	}
 }
 

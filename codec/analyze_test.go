@@ -119,3 +119,88 @@ func TestAnalyzeDriftRecommendedInterval(t *testing.T) {
 			rpt.RecommendedInterval, intervals)
 	}
 }
+
+// TestExtractNormalRatios verifies that ExtractNormalRatios returns the correct
+// ClassNormal ratios for a simple monotone series.
+func TestExtractNormalRatios(t *testing.T) {
+	// Simple 1% growth — all values should be ClassNormal.
+	values := make([]float64, 100)
+	v := 10.0
+	for i := range values {
+		v *= 1.01
+		values[i] = v
+	}
+	ratios := codec.ExtractNormalRatios(values, codec.DriftReanchor, 256)
+	if len(ratios) == 0 {
+		t.Fatal("ExtractNormalRatios returned empty slice for normal series")
+	}
+	for i, r := range ratios {
+		if math.IsNaN(r) || math.IsInf(r, 0) || r <= 0 {
+			t.Errorf("ratio[%d]=%v is not a valid positive finite ratio", i, r)
+		}
+	}
+}
+
+// TestExtractNormalRatiosEdgeCases verifies ExtractNormalRatios edge cases.
+func TestExtractNormalRatiosEdgeCases(t *testing.T) {
+	// Empty input.
+	if r := codec.ExtractNormalRatios(nil, codec.DriftReanchor, 256); len(r) != 0 {
+		t.Errorf("nil input: expected empty, got %d ratios", len(r))
+	}
+	// Single value — no ratios possible.
+	if r := codec.ExtractNormalRatios([]float64{1.0}, codec.DriftReanchor, 256); len(r) != 0 {
+		t.Errorf("single value: expected empty, got %d ratios", len(r))
+	}
+	// Zero interval — treated as invalid.
+	if r := codec.ExtractNormalRatios([]float64{1.0, 2.0}, codec.DriftReanchor, 0); len(r) != 0 {
+		t.Errorf("zero interval: expected empty, got %d ratios", len(r))
+	}
+}
+
+// TestExtractNormalRatiosBoundaryEvents verifies boundary events: only
+// ClassBoundaryZero (triggered when prev is near-zero) is excluded; the
+// zero-ratio itself is ClassNormal and is included.
+func TestExtractNormalRatiosBoundaryEvents(t *testing.T) {
+	// values[1]/values[0]=2 → ClassNormal
+	// values[2]/values[1]=0 → ClassNormal (ratio=0; prev becomes 0)
+	// computeRatio(values[3], 0.0) → ClassBoundaryZero (prev near-zero), excluded
+	// values[4]/values[3]=2 → ClassNormal
+	values := []float64{1.0, 2.0, 0.0, 3.0, 6.0}
+	ratios := codec.ExtractNormalRatios(values, codec.DriftReanchor, 256)
+	if len(ratios) != 3 {
+		t.Fatalf("expected 3 ratios, got %d: %v", len(ratios), ratios)
+	}
+	if math.Abs(ratios[0]-2.0) > 1e-9 {
+		t.Errorf("ratio[0]=%v, want ~2.0", ratios[0])
+	}
+	if ratios[1] != 0.0 {
+		t.Errorf("ratio[1]=%v, want 0.0 (zero-value ClassNormal)", ratios[1])
+	}
+	if math.Abs(ratios[2]-2.0) > 1e-9 {
+		t.Errorf("ratio[2]=%v, want ~2.0", ratios[2])
+	}
+}
+
+// TestExtractNormalRatiosModeB verifies Mode B (DriftCompensate) path is exercised.
+func TestExtractNormalRatiosModeB(t *testing.T) {
+	values := make([]float64, 500)
+	v := 100.0
+	for i := range values {
+		v *= 1.001
+		values[i] = v
+	}
+	ratiosA := codec.ExtractNormalRatios(values, codec.DriftReanchor, 256)
+	ratiosB := codec.ExtractNormalRatios(values, codec.DriftCompensate, 256)
+	if len(ratiosA) != len(ratiosB) {
+		t.Errorf("mode A returned %d ratios, mode B returned %d", len(ratiosA), len(ratiosB))
+	}
+}
+
+// TestAnalyzeDriftInvalidInterval verifies interval=0 produces no rows.
+func TestAnalyzeDriftInvalidInterval(t *testing.T) {
+	values := []float64{1.0, 2.0, 3.0, 4.0}
+	rpt := codec.AnalyzeDrift(values, []int{0, -5})
+	if len(rpt.Rows) != 0 {
+		t.Errorf("expected 0 rows for invalid intervals, got %d", len(rpt.Rows))
+	}
+}

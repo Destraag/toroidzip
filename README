@@ -13,24 +13,51 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 1 (round-trip encoding, no entropy coder yet).
+Status: Milestone 2 complete — rANS entropy coding, quantization, drift analysis.
 
 Usage
 -----
 
   go install github.com/Destraag/toroidzip/cmd/toroidzip@latest
 
+  # Lossless encode/decode (rANS entropy coding)
   toroidzip encode input.f64 output.tzrz
   toroidzip decode input.tzrz output.f64
 
+  # Quantized (lossy) encode — 8 sig-fig precision
+  toroidzip encode --lossy --sig-figs 8 input.f64 output.tzrz
+
+  # Auto-select entropy mode from data
+  toroidzip encode --auto input.f64 output.tzrz
+
+  # Analyze drift characteristics before encoding
+  toroidzip analyze input.f64
+
 Input/output: raw IEEE 754 little-endian float64 binary files.
+
+Flags (encode)
+--------------
+
+  --entropy-mode raw|lossless|quantized
+      raw:       no entropy coding (stream 1, baseline)
+      lossless:  rANS-coded ratio stream (stream 2, default)
+      quantized: lossy N-bit log-space quantization (stream 3)
+
+  --sig-figs N           significant decimal figures to retain (1–9); implies quantized
+  --precision N          precision bits (1–30) for quantized mode
+  --auto                 auto-select entropy mode by analyzing the input
+  --lossy                shorthand for --entropy-mode quantized
+  --drift-mode A|B       A = periodic reanchor (default), B = Kahan compensate
+  --reanchor-interval N  values between verbatim anchors (default 256)
 
 Structure
 ---------
 
-  codec/          core encode/decode logic and boundary classification
-  cmd/toroidzip/  CLI binary
-  PLAN            project roadmap and algorithm design
+  codec/          encode/decode logic, boundary classification, rANS, quantization
+  codec/analyze.go  AnalyzeDrift, AnalyzePrecision, ExtractNormalRatios
+  cmd/toroidzip/  CLI binary (encode, decode, analyze subcommands)
+  PLAN            algorithm design and session log
+  ROADMAP         milestone tracker
 
 License
 -------

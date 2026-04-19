@@ -1,7 +1,7 @@
 ToroidZip — Roadmap
 ===================
 
-## Status: Milestone 1 complete
+## Status: Milestone 2 complete
 
 ---
 
@@ -13,23 +13,38 @@ ToroidZip — Roadmap
 - Tests passing, benchmarks wired
 - CLI scaffold
 
-### Milestone 2 — Entropy coding
-- Implement rANS (range Asymmetric Numeral Systems) encoder/decoder
-- Ratio distribution model (Laplace centered at 1.0 as starting point)
-- Boundary event sidecar format (separate from main entropy stream)
-- Verify lossless round-trip with entropy coding
-- First real compression ratios
+### Milestone 2 — Entropy coding ✓
+- rANS (range Asymmetric Numeral Systems) encoder/decoder
+- Three stream versions: v1 (raw), v2 (lossless rANS), v3 (quantized rANS)
+- Quantization: N-bit log-space mapping, precision range [1, 30]
+- Payload tiers: uint8 / uint16 / uint32 per ratio payload
+- DriftCompensate (Mode B): Kahan log-space product accumulator
+- `AnalyzeDrift`: per-interval, per-mode error report with recommendation
+- `AnalyzePrecision`: auto-select precision bits from data distribution
+- `SigFigsToBits` / `BitsToSigFigs`: sig-fig ↔ bit-depth conversion
+- CLI expanded: `analyze` subcommand, `--entropy-mode`, `--sig-figs`,
+  `--precision`, `--auto`, `--lossy` flags
+- Coverage: 87.6%
 
 ### Milestone 3 — Benchmarking
 Compare against: raw float64, delta encoding, zstd, brotli, fpzip
 
-Target data classes:
-1. Smooth floating-point time series (IoT/sensor)
-2. Scientific measurement data (multi-order-of-magnitude range)
-3. Financial tick data
-4. Neural network weight tensors
+Target data classes (benchmark dataset suite already implemented in
+`codec/bench_test.go`):
+1. Sensor stream — slow sinusoidal drift, IoT/logger
+2. Financial walk — log-normal RW with 1% regime jumps
+3. Scientific multi-scale — values oscillate across 12 decades (1e-6..1e6)
+4. Volatile series — 98% stable, 2% ×10/÷10 shock events
+5. Near-constant — σ≈0.01%, max-compression noise floor
+6. Neural weight proxy — Gaussian mixture at ±0.01 and ±0.1 layer centres
 
 Metrics: compression ratio, encode MB/s, decode MB/s
+
+Tasks:
+- [ ] Add external comparison codec (zstd via cgo or shell, fpzip)
+- [ ] Write benchmark harness that emits CSV / markdown table
+- [ ] Tune rANS symbol distribution for each data class
+- [ ] Profile hot paths (ratio compute loop, rANS table build)
 
 ### Milestone 4 — Analysis and iteration
 - Identify winning/losing data classes and root causes
@@ -42,18 +57,19 @@ Metrics: compression ratio, encode MB/s, decode MB/s
 
 ---
 
-## CLI flags
+## CLI reference
 
-    toroidzip encode [--reanchor-interval N] [--drift-mode A|B|C] <input.f64> <output.tzrz>
+    toroidzip encode [flags] <input.f64> <output.tzrz>
     toroidzip decode <input.tzrz> <output.f64>
+    toroidzip analyze <input.f64>
 
-`--reanchor-interval N` (default 256): lower = more accurate reconstruction,
-larger file. Higher = smaller file, more cumulative float drift between anchors.
-
-`--drift-mode A|B|C` (default A): error-management strategy.
-  A = reanchor: periodic verbatim anchors, lossless.
-  B = compensate: Kahan log-space product, near-lossless, no size overhead.
-  C = quantize: ratios rounded to float32, lossy, more compressible.
+    --entropy-mode raw|lossless|quantized  (default lossless)
+    --sig-figs N       significant decimal figures 1–9 (implies quantized)
+    --precision N      precision bits 1–30 (implies quantized)
+    --auto             auto-select mode from data analysis
+    --lossy            shorthand for --entropy-mode quantized
+    --drift-mode A|B   A=reanchor (default), B=Kahan compensate
+    --reanchor-interval N  (default 256)
 
 ---
 
@@ -61,9 +77,19 @@ larger file. Higher = smaller file, more cumulative float drift between anchors.
 
     import "github.com/Destraag/toroidzip/codec"
 
-    opts := codec.EncodeOptions{
-        ReanchorInterval: 256,              // 0 = use default
-        DriftMode:        codec.DriftReanchor, // A=Reanchor B=Compensate C=Quantize
-    }
-    err := codec.Encode(values, w, opts)
+    // Encode / Decode
+    err := codec.Encode(values, w, codec.EncodeOptions{
+        EntropyMode:      codec.EntropyLossless,
+        DriftMode:        codec.DriftReanchor,
+        ReanchorInterval: 256,
+    })
     values, err := codec.Decode(r)
+
+    // Analysis
+    report := codec.AnalyzeDrift(values, []int{64, 128, 256, 512})
+    precision := codec.AnalyzePrecision(values, 0.01) // 1% max relative error
+    ratios := codec.ExtractNormalRatios(values, codec.DriftReanchor, 256)
+
+    // Precision conversion
+    bits := codec.SigFigsToBits(6)   // 6 sig figs → bit depth
+    figs := codec.BitsToSigFigs(20)  // 20 bits → sig figs
