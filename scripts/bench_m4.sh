@@ -13,18 +13,21 @@
 #   ./scripts/bench_m4.sh [--n N] [--keep]
 #
 # Flags:
-#   --n N     number of float64 values per dataset (default 50000)
-#   --keep    keep the bench_data/ temp directory after the run
+#   --n N          number of float64 values per dataset (default 50000)
+#   --sig-figs N   test only this precision (default: test 3, 6, and 9 sig figs)
+#   --keep         keep the bench_data/ temp directory after the run
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 N=50000
 KEEP=0
+PRECISIONS=(3 6 9)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --n) N="$2"; shift 2 ;;
+    --sig-figs) PRECISIONS=("$2"); shift 2 ;;
     --keep) KEEP=1; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
@@ -79,8 +82,10 @@ mb_per_sec() {
 echo ""
 echo "## M4 External Baseline Benchmark — n=$N values ($(( UNCOMPRESSED_BYTES / 1024 )) KB uncompressed)"
 echo ""
-echo "ToroidZip mode: Q-3sf/Reanchor (M3 best-ratio winner)"
+printf "ToroidZip modes tested: %s(Reanchor; use --sig-figs N to test one precision)\n" \
+  "$(printf "Q-%ssf " "${PRECISIONS[@]}")"
 echo "Ratio = encoded_bytes / uncompressed_bytes (lower is better)."
+echo "External codecs are lossless; ToroidZip rows are lossy at the stated precision."
 echo ""
 
 # ── build ToroidZip CLI ───────────────────────────────────────────────────────
@@ -145,16 +150,18 @@ for ds in "${DATASETS[@]}"; do
   printf "| %-14s | %-14s | %-12s | %9s | %10s |\n" \
     "$ds" "uncompressed" "-" "1.0000" "-"
 
-  # ToroidZip Q-3sf/Reanchor
-  tz_out="$BENCH_DIR/${ds}.tzrz"
-  ms=$(time_compress "$TZ encode --entropy-mode quantized --sig-figs 3 $f $tz_out" "$tz_out")
-  enc=$(file_bytes "$tz_out")
-  print_row "$ds" "toroidzip" "Q-3sf/Reanchor" "$enc" "$ms"
+  # ToroidZip at each requested precision (Reanchor mode)
+  for sf in "${PRECISIONS[@]}"; do
+    tz_out="$BENCH_DIR/${ds}.q${sf}.tzrz"
+    ms=$(time_compress "$TZ encode --entropy-mode quantized --sig-figs $sf $f $tz_out" "$tz_out")
+    enc=$(file_bytes "$tz_out")
+    print_row "$ds" "toroidzip" "Q-${sf}sf/Reanchor" "$enc" "$ms"
+  done
 
   # zstd level 3 (default) and level 19 (max)
   if [[ $HAS_ZSTD -eq 1 ]]; then
     for lvl in 3 19; do
-      zst_out="$BENCH_DIR/${ds}.zst"
+      zst_out="$BENCH_DIR/${ds}.zst${lvl}"
       ms=$(time_compress "zstd -q -$lvl --force $f -o $zst_out" "$zst_out")
       enc=$(file_bytes "$zst_out")
       print_row "$ds" "zstd" "level $lvl" "$enc" "$ms"
@@ -164,7 +171,7 @@ for ds in "${DATASETS[@]}"; do
   # brotli quality 6 (fast) and 11 (max)
   if [[ $HAS_BROTLI -eq 1 ]]; then
     for q in 6 11; do
-      br_out="$BENCH_DIR/${ds}.br"
+      br_out="$BENCH_DIR/${ds}.br${q}"
       ms=$(time_compress "brotli -q $q --force -o $br_out $f" "$br_out")
       enc=$(file_bytes "$br_out")
       print_row "$ds" "brotli" "q=$q" "$enc" "$ms"
@@ -183,46 +190,84 @@ done
 
 echo ""
 
-# ── per-dataset winner summary ────────────────────────────────────────────────
+# ── tier comparison summary ───────────────────────────────────────────────────
 
-echo "### Winner per dataset (lowest ratio)"
+echo "### Tier comparison"
 echo ""
-printf "| %-14s | %-14s | %-12s | %9s |\n" "Dataset" "Winner" "Level/Mode" "Ratio"
-printf "|%s|%s|%s|%s|\n" "---------------:" "---------------:" "-------------:" "----------:"
+echo "External codecs are lossless (no data loss). ToroidZip rows are lossy"
+echo "at the stated precision. Compare within a tier, not across tiers."
+echo ""
 
-for ds in "${DATASETS[@]}"; do
-  # Re-collect all enc sizes for this dataset into an associative array
-  declare -A sizes
-  sizes["toroidzip:Q-3sf/Reanchor"]=$(file_bytes "$BENCH_DIR/${ds}.tzrz")
-  [[ $HAS_ZSTD   -eq 1 ]] && {
-    zstd -q -3 --force "$BENCH_DIR/${ds}.f64" -o "$BENCH_DIR/${ds}.zst3"  2>/dev/null
-    zstd -q -19 --force "$BENCH_DIR/${ds}.f64" -o "$BENCH_DIR/${ds}.zst19" 2>/dev/null
-    sizes["zstd:level 3"]=$(file_bytes "$BENCH_DIR/${ds}.zst3")
-    sizes["zstd:level 19"]=$(file_bytes "$BENCH_DIR/${ds}.zst19")
-  }
-  [[ $HAS_BROTLI -eq 1 ]] && {
-    brotli -q 6  --force -o "$BENCH_DIR/${ds}.br6"  "$BENCH_DIR/${ds}.f64" 2>/dev/null
-    brotli -q 11 --force -o "$BENCH_DIR/${ds}.br11" "$BENCH_DIR/${ds}.f64" 2>/dev/null
-    sizes["brotli:q=6"]=$(file_bytes "$BENCH_DIR/${ds}.br6")
-    sizes["brotli:q=11"]=$(file_bytes "$BENCH_DIR/${ds}.br11")
-  }
-  [[ $HAS_FPZIP  -eq 1 ]] && {
-    sizes["fpzip:lossless"]=$(file_bytes "$BENCH_DIR/${ds}.fpz")
-  }
+HAS_ANY_LOSSLESS=0
+[[ $HAS_ZSTD -eq 1 || $HAS_BROTLI -eq 1 || $HAS_FPZIP -eq 1 ]] && HAS_ANY_LOSSLESS=1
 
-  best_codec=""; best_level=""; best_bytes=$UNCOMPRESSED_BYTES
-  for key in "${!sizes[@]}"; do
-    b="${sizes[$key]}"
-    if [[ "$b" -lt "$best_bytes" ]]; then
-      best_bytes="$b"
-      best_codec="${key%%:*}"
-      best_level="${key##*:}"
+# Lossless tier
+if [[ $HAS_ANY_LOSSLESS -eq 1 ]]; then
+  echo "#### Lossless tier (no data loss)"
+  echo ""
+  printf "| %-14s | %-14s | %-12s | %9s |\n" "Dataset" "Best codec" "Level/Mode" "Ratio"
+  printf "|%s|%s|%s|%s|\n" "---------------:" "---------------:" "-------------:" "----------:"
+  for ds in "${DATASETS[@]}"; do
+    declare -A ll_sizes
+    [[ $HAS_ZSTD   -eq 1 ]] && {
+      ll_sizes["zstd:level 3"]=$(file_bytes "$BENCH_DIR/${ds}.zst3")
+      ll_sizes["zstd:level 19"]=$(file_bytes "$BENCH_DIR/${ds}.zst19")
+    }
+    [[ $HAS_BROTLI -eq 1 ]] && {
+      ll_sizes["brotli:q=6"]=$(file_bytes "$BENCH_DIR/${ds}.br6")
+      ll_sizes["brotli:q=11"]=$(file_bytes "$BENCH_DIR/${ds}.br11")
+    }
+    [[ $HAS_FPZIP  -eq 1 ]] && { ll_sizes["fpzip:lossless"]=$(file_bytes "$BENCH_DIR/${ds}.fpz"); }
+    best_codec=""; best_level=""; best_bytes=$UNCOMPRESSED_BYTES
+    for key in "${!ll_sizes[@]}"; do
+      b="${ll_sizes[$key]}"
+      if [[ "$b" -lt "$best_bytes" ]]; then
+        best_bytes="$b"; best_codec="${key%%:*}"; best_level="${key##*:}"
+      fi
+    done
+    printf "| %-14s | %-14s | %-12s | %9s |\n" "$ds" "$best_codec" "$best_level" "$(ratio "$best_bytes")"
+    unset ll_sizes
+  done
+  echo ""
+fi
+
+# ToroidZip quantized tiers — one section per tested precision
+for sf in "${PRECISIONS[@]}"; do
+  echo "#### Q-${sf}sf quantized tier (~${sf} significant figures, lossy)"
+  echo ""
+  if [[ $HAS_ANY_LOSSLESS -eq 1 ]]; then
+    printf "| %-14s | %9s | %18s |\n" "Dataset" "TZ ratio" "vs best lossless"
+    printf "|%s|%s|%s|\n" "---------------:" "----------:" "-------------------:"
+  else
+    printf "| %-14s | %9s |\n" "Dataset" "TZ ratio"
+    printf "|%s|%s|\n" "---------------:" "----------:"
+  fi
+  for ds in "${DATASETS[@]}"; do
+    tz_bytes=$(file_bytes "$BENCH_DIR/${ds}.q${sf}.tzrz")
+    tz_r=$(ratio "$tz_bytes")
+    if [[ $HAS_ANY_LOSSLESS -eq 1 ]]; then
+      declare -A ll2
+      [[ $HAS_ZSTD   -eq 1 ]] && {
+        ll2["a"]=$(file_bytes "$BENCH_DIR/${ds}.zst3")
+        ll2["b"]=$(file_bytes "$BENCH_DIR/${ds}.zst19")
+      }
+      [[ $HAS_BROTLI -eq 1 ]] && {
+        ll2["c"]=$(file_bytes "$BENCH_DIR/${ds}.br6")
+        ll2["d"]=$(file_bytes "$BENCH_DIR/${ds}.br11")
+      }
+      [[ $HAS_FPZIP  -eq 1 ]] && { ll2["e"]=$(file_bytes "$BENCH_DIR/${ds}.fpz"); }
+      best_ll=$UNCOMPRESSED_BYTES
+      for key in "${!ll2[@]}"; do
+        b="${ll2[$key]}"; [[ "$b" -lt "$best_ll" ]] && best_ll="$b"
+      done
+      unset ll2
+      vs=$(awk "BEGIN { printf \"%+.1f%%\", ($tz_bytes - $best_ll) / $best_ll * 100 }")
+      printf "| %-14s | %9s | %18s |\n" "$ds" "$tz_r" "$vs"
+    else
+      printf "| %-14s | %9s |\n" "$ds" "$tz_r"
     fi
   done
-
-  r=$(ratio "$best_bytes")
-  printf "| %-14s | %-14s | %-12s | %9s |\n" "$ds" "$best_codec" "$best_level" "$r"
-  unset sizes
+  echo ""
 done
 
 echo ""
