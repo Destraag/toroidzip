@@ -1,4 +1,4 @@
-// Log-space ratio quantisation for the quantized entropy mode (EntropyQuantized).
+// Package codec provides log-space ratio quantisation for the quantized entropy mode (EntropyQuantized).
 //
 // Design:
 //   - Quantisation is uniform in log₂ space, centred on ratio = 1.0.
@@ -97,8 +97,9 @@ func clampBits(bits int) int {
 	return bits
 }
 
-// quantisation bit depth. Only ClassNormal values should be passed; boundary
-// and reanchor events are stored verbatim and do not need quantisation.
+// AnalyzePrecision surveys ratios to recommend a quantisation bit depth.
+// Only ClassNormal values should be passed; boundary and reanchor events are
+// stored verbatim and do not need quantisation.
 //
 // Returns a zero-value report for empty input.
 func AnalyzePrecision(ratios []float64) PrecisionReport {

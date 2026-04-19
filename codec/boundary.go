@@ -6,28 +6,28 @@ import "math"
 type RatioClass byte
 
 const (
-	// ClassIdentity: ratio is within epsilon of 1.0 — "no change" state.
+	// ClassIdentity is a ratio within epsilon of 1.0 — "no change" state.
 	// This is the most common class in smooth data and will receive the
 	// shortest codeword when entropy coding is added.
 	ClassIdentity RatioClass = iota
 
-	// ClassNormal: well-behaved ratio outside the identity band but within
+	// ClassNormal is a well-behaved ratio outside the identity band but within
 	// normal floating-point range. Arithmetic is valid and reversible.
 	ClassNormal
 
-	// ClassBoundaryZero: the previous value was zero or near-zero, making the
-	// ratio undefined or extreme. The current value is stored verbatim as a
-	// boundary event. In the toroidal model, zero is the inner boundary where
-	// ratio arithmetic loses meaning.
+	// ClassBoundaryZero indicates the previous value was zero or near-zero,
+	// making the ratio undefined or extreme. The current value is stored
+	// verbatim as a boundary event. In the toroidal model, zero is the inner
+	// boundary where ratio arithmetic loses meaning.
 	ClassBoundaryZero
 
-	// ClassBoundaryInf: the ratio exceeds the infinity threshold, meaning the
-	// values have changed by an extreme factor. In the toroidal model, zero and
-	// infinity are the same inner boundary approached from opposite directions.
-	// Both collapse ratio arithmetic. Stored verbatim as a boundary event.
+	// ClassBoundaryInf indicates the ratio exceeds the infinity threshold,
+	// meaning the values have changed by an extreme factor. In the toroidal
+	// model, zero and infinity are the same inner boundary approached from
+	// opposite directions. Both collapse ratio arithmetic. Stored verbatim.
 	ClassBoundaryInf
 
-	// ClassReanchor: not a ratio — this position holds a verbatim float64
+	// ClassReanchor is not a ratio — this position holds a verbatim float64
 	// anchor used to reset reconstruction and bound cumulative drift.
 	ClassReanchor
 )

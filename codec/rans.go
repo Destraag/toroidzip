@@ -1,4 +1,4 @@
-// rANS (range Asymmetric Numeral Systems) entropy coder for the RatioClass
+// Package codec implements a rANS (range Asymmetric Numeral Systems) entropy coder for the RatioClass
 // alphabet.
 //
 // Parameters:
