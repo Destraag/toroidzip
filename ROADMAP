@@ -26,11 +26,11 @@ ToroidZip — Roadmap
   `--precision`, `--auto`, `--lossy` flags
 - Coverage: 87.6%
 
-### Milestone 3 — Benchmarking
-Compare against: raw float64, delta encoding, zstd, brotli, fpzip
+### Milestone 3 — Internal benchmarking
+Profile all ToroidZip modes across the 6 dataset classes. Identify which
+mode/interval/precision combination wins per data class.
 
-Target data classes (benchmark dataset suite already implemented in
-`codec/bench_test.go`):
+Dataset suite (implemented in `codec/bench_test.go`):
 1. Sensor stream — slow sinusoidal drift, IoT/logger
 2. Financial walk — log-normal RW with 1% regime jumps
 3. Scientific multi-scale — values oscillate across 12 decades (1e-6..1e6)
@@ -41,19 +41,67 @@ Target data classes (benchmark dataset suite already implemented in
 Metrics: compression ratio, encode MB/s, decode MB/s
 
 Tasks:
-- [ ] Add external comparison codec (zstd via cgo or shell, fpzip)
-- [ ] Write benchmark harness that emits CSV / markdown table
-- [ ] Tune rANS symbol distribution for each data class
+- [ ] Benchmark harness: run all modes × datasets, emit markdown table
+- [ ] Tune rANS symbol distribution per data class
 - [ ] Profile hot paths (ratio compute loop, rANS table build)
+- [ ] Identify winning/losing data classes and document root causes
 
-### Milestone 4 — Analysis and iteration
-- Identify winning/losing data classes and root causes
-- Adaptive entropy model
-- Explore error management options (compensated multiply, lossy mode)
+### Milestone 4 — External baselines
+One-off comparison against established codecs via shell script / Makefile
+target. No external Go dependencies added to the library module.
 
-### Milestone 5 — Formalization
+Comparison targets:
+- raw float64 (uncompressed baseline)
+- delta encoding (simple delta + zstd)
+- zstd (general-purpose LZ77+ANS)
+- brotli (LZ77+Huffman, strong on structured data)
+- fpzip (purpose-built floating-point codec)
+
+Apply findings to refine M3 results and feed into M5 design.
+
+Tasks:
+- [ ] Shell/Makefile benchmark harness calling external binaries if present
+- [ ] Unified CSV/markdown output combining ToroidZip and external results
+- [ ] Document per-class winner and margin
+
+### Milestone 5 — Adaptive entropy model (ongoing refinement)
+Version 4 stream: per-ratio hybrid mode. Justified by M3/M4 benchmark data.
+Not a hard deliverable — iterated as findings accumulate.
+
+Design:
+  The v3 EntropyQuantized mode quantizes ALL ClassNormal ratios to N bits, which
+  is lossy regardless of whether the data actually needs that precision. The v4
+  hybrid avoids unnecessary loss:
+
+  For each ClassNormal ratio, compute the quantization error at PrecisionBits.
+  - If error < tolerance (ε): store as uint16 quantized symbol (compact, lossy
+    only by at most ε — the data "doesn't care" at this precision)
+  - If error ≥ tolerance (ε): emit new class ClassNormalExact and store the full
+    float64 (no information loss for this ratio)
+
+  At ε=0: degenerates to fully lossless (all ratios take the exact path).
+  At ε=∞: degenerates to v3 EntropyQuantized (all ratios take the quantized path).
+  At practical ε: smooth data (Sensor, NearConstant) compresses near v3 ratios
+  with near-zero data loss; high-entropy data (Financial) falls back to exact
+  storage on the ratios that resist quantization — no false compression.
+
+  This is NOT the same as the adaptive precision-selection idea (auto-selecting
+  PrecisionBits via AnalyzePrecision). That is a simpler pre-encode pass feeding
+  into v3. The v4 hybrid is a per-ratio decision at encode time.
+
+Tasks:
+- [ ] Define v4 stream format (version byte 4, ClassNormalExact = 5)
+- [ ] Implement 6-symbol rANS alphabet (adds ClassNormalExact alongside existing 5)
+- [ ] Implement per-ratio encode decision using configurable ε tolerance
+- [ ] Add --tolerance / --hybrid CLI flag
+- [ ] Validate: at ε=0 output is bit-identical to v2 lossless; at ε=∞ matches v3
+- [ ] Benchmark hybrid vs v3 on M3 datasets; measure compression and error delta
+- [ ] Feed external baseline gaps (M4) back into model decisions
+
+### Milestone 6 — Formalization
 - Algorithm writeup with mathematical basis
 - Integration guide (library API)
+- Publish results after M5 stabilises the design
 
 ---
 
