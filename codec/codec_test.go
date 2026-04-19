@@ -130,6 +130,120 @@ func TestDriftModeQuantize(t *testing.T) {
 	}
 }
 
+// TestClassify covers boundary inputs not exercised by round-trip tests.
+func TestClassify(t *testing.T) {
+	cases := []struct {
+		name  string
+		input float64
+		want  codec.RatioClass
+	}{
+		{"NaN", math.NaN(), codec.ClassPoleInf},
+		{"+Inf", math.Inf(1), codec.ClassPoleInf},
+		{"-Inf", math.Inf(-1), codec.ClassPoleInf},
+		{"large positive", 2e15, codec.ClassPoleInf},
+		{"large negative", -2e15, codec.ClassPoleInf},
+		{"identity", 1.0, codec.ClassIdentity},
+		{"identity epsilon edge", 1.0 + 5e-10, codec.ClassIdentity},
+		{"normal", 1.5, codec.ClassNormal},
+		{"negative normal", -1.5, codec.ClassNormal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := codec.Classify(tc.input)
+			if got != tc.want {
+				t.Errorf("Classify(%v) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDecodeErrors covers Decode rejection of malformed streams.
+func TestDecodeErrors(t *testing.T) {
+	t.Run("empty reader", func(t *testing.T) {
+		_, err := codec.Decode(bytes.NewReader(nil))
+		if err == nil {
+			t.Fatal("expected error on empty reader")
+		}
+	})
+
+	t.Run("bad magic", func(t *testing.T) {
+		_, err := codec.Decode(bytes.NewReader([]byte("NOPE")))
+		if err == nil {
+			t.Fatal("expected error on bad magic")
+		}
+	})
+
+	t.Run("wrong version", func(t *testing.T) {
+		// Build a header with correct magic but version=99.
+		var buf bytes.Buffer
+		buf.Write([]byte{'T', 'Z', 'R', 'Z'}) // magic
+		buf.WriteByte(99)                       // bad version
+		_, err := codec.Decode(&buf)
+		if err == nil {
+			t.Fatal("expected error on unsupported version")
+		}
+	})
+
+	t.Run("truncated after magic", func(t *testing.T) {
+		_, err := codec.Decode(bytes.NewReader([]byte{'T', 'Z', 'R', 'Z'}))
+		if err == nil {
+			t.Fatal("expected error on truncated stream")
+		}
+	})
+}
+
+// TestEncodeEmptyInput verifies Encode rejects empty slices.
+func TestEncodeEmptyInput(t *testing.T) {
+	var buf bytes.Buffer
+	err := codec.Encode(nil, &buf, codec.EncodeOptions{})
+	if err == nil {
+		t.Fatal("expected error encoding nil slice")
+	}
+	err = codec.Encode([]float64{}, &buf, codec.EncodeOptions{})
+	if err == nil {
+		t.Fatal("expected error encoding empty slice")
+	}
+}
+
+// TestKahanProdZeroAnchor verifies Mode B handles a zero-valued anchor.
+func TestKahanProdZeroAnchor(t *testing.T) {
+	// A sequence starting at zero triggers the zero-anchor path in newKahanProd.
+	// After the zero, a pole-zero event fires and resets the anchor to the next value.
+	values := []float64{0.0, 5.0, 10.0, 20.0}
+	opts := codec.EncodeOptions{DriftMode: codec.DriftCompensate}
+	got := roundTrip(t, values, opts)
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch: got %d want %d", len(got), len(values))
+	}
+	// Mode B is near-lossless: Kahan log-space introduces tiny FP rounding.
+	for i, want := range values {
+		if want == 0 {
+			if got[i] != 0 {
+				t.Errorf("index %d: got %v want 0", i, got[i])
+			}
+			continue
+		}
+		if math.Abs(got[i]-want) > math.Abs(want)*1e-12 {
+			t.Errorf("index %d: got %v want %v (diff %e)", i, got[i], want, got[i]-want)
+		}
+	}
+}
+
+// TestRoundTripPoleInf verifies pole-inf events (extreme ratio) are handled correctly.
+func TestRoundTripPoleInf(t *testing.T) {
+	// Jump from 1.0 to 1e16 triggers ClassPoleInf.
+	values := []float64{1.0, 1e16, 2e16, 3e16}
+	got := roundTrip(t, values, codec.EncodeOptions{})
+	if len(got) != len(values) {
+		t.Fatalf("length mismatch")
+	}
+	for i, want := range values {
+		if got[i] != want {
+			t.Errorf("index %d: got %v want %v", i, got[i], want)
+		}
+	}
+}
+
 // BenchmarkEncode measures encoding throughput on a smooth series.
 func BenchmarkEncode(b *testing.B) {
 	values := make([]float64, 100_000)
