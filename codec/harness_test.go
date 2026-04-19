@@ -13,6 +13,7 @@ package codec_test
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ type harnessResult struct {
 	ratio    float64 // compressed / raw  (lower is better)
 	encMBs   float64 // MB/s encode
 	decMBs   float64 // MB/s decode
+	maxErr   float64 // max relative reconstruction error vs original (0 = lossless)
 }
 
 // measureMode encodes and decodes values, returning a harnessResult.
@@ -64,18 +66,34 @@ func measureMode(dataset string, values []float64, m harnessMode) harnessResult 
 
 	// ── decode ──────────────────────────────────────────────────────────────
 	var decDur time.Duration
+	var decoded []float64
 	for i := 0; i < warmup+iters; i++ {
 		t0 := time.Now()
-		_, _ = codec.Decode(bytes.NewReader(encData))
+		got, _ := codec.Decode(bytes.NewReader(encData))
 		d := time.Since(t0)
 		if i >= warmup {
 			decDur += d
+		}
+		if i == warmup {
+			decoded = got
 		}
 	}
 	decAvg := decDur / iters
 	decMBs := inputMB / decAvg.Seconds()
 
 	ratio := float64(len(encData)) / float64(rawBytes)
+
+	// ── max relative error ───────────────────────────────────────────────────
+	var maxErr float64
+	if len(decoded) == len(values) {
+		for i, orig := range values {
+			if orig != 0 {
+				if e := math.Abs(decoded[i]-orig) / math.Abs(orig); e > maxErr {
+					maxErr = e
+				}
+			}
+		}
+	}
 
 	return harnessResult{
 		dataset:  dataset,
@@ -85,17 +103,16 @@ func measureMode(dataset string, values []float64, m harnessMode) harnessResult 
 		ratio:    ratio,
 		encMBs:   encMBs,
 		decMBs:   decMBs,
+		maxErr:   maxErr,
 	}
 }
 
-// TestM3Harness is the M3 internal benchmark harness.
+// TestM3Harness is the internal benchmark harness covering M3 and M5 modes.
 // It prints a markdown table and always passes.
 //
 // Axes covered:
-//   - EntropyMode: Raw, Lossless, Quantized (3sf / 6sf / 9sf)
+//   - EntropyMode: Raw, Lossless, Quantized (3sf / 6sf / 9sf), Adaptive (ε=1e-4 / ε=1e-3)
 //   - DriftMode:   Reanchor (default), Compensate, Quantize
-//
-// Note: EntropyAdaptive/Hybrid is M5 work and not yet implemented.
 func TestM3Harness(t *testing.T) {
 	const n = 50_000
 	rawFloat64Bytes := n * 8 // unencoded IEEE-754 baseline
@@ -170,6 +187,22 @@ func TestM3Harness(t *testing.T) {
 			})
 		}
 	}
+	// Adaptive (v4): two tolerance levels × Reanchor only (Compensate and
+	// Quantize drift modes have identical stream size; Reanchor is the
+	// representative for ratio comparison).
+	for _, tol := range []float64{1e-4, 1e-3} {
+		tolLabel := fmt.Sprintf("%.0e", tol)
+		modes = append(modes, modeSpec{
+			fmt.Sprintf("Adaptive(ε=%s)/Reanchor", tolLabel),
+			codec.EncodeOptions{
+				EntropyMode:   codec.EntropyAdaptive,
+				PrecisionBits: 16,
+				Tolerance:     tol,
+				DriftMode:     codec.DriftReanchor,
+			},
+			16,
+		})
+	}
 
 	// Collect results.
 	type row struct {
@@ -225,9 +258,9 @@ func TestM3Harness(t *testing.T) {
 
 	// ── Per-dataset best-ratio summary (TL;DR) ───────────────────────────────
 	fmt.Printf("### Best compression ratio per dataset (TL;DR — excludes Uncompressed / Raw baselines)\n\n")
-	fmt.Printf("| %-14s | %-22s | %8s | %9s |\n", "Dataset", "Best mode", "Tier", "Ratio")
-	fmt.Printf("|%s|%s|%s|%s|\n",
-		"---------------:", "-----------------------:", "---------:", "----------:")
+	fmt.Printf("| %-14s | %-30s | %8s | %9s | %12s |\n", "Dataset", "Best mode", "Tier", "Ratio", "MaxErr")
+	fmt.Printf("|%s|%s|%s|%s|%s|\n",
+		"---------------:", "-------------------------------:", "---------:", "----------:", "-------------:")
 
 	for _, ds := range datasets {
 		best := row{harnessResult{ratio: 1e9}, 0}
@@ -240,8 +273,12 @@ func TestM3Harness(t *testing.T) {
 		if best.bits > 0 {
 			tier = fmt.Sprintf("%s/%db", tierLabel(best.bits), best.bits)
 		}
-		fmt.Printf("| %-14s | %-22s | %8s | %9.4f |\n",
-			ds.name, best.mode, tier, best.ratio)
+		maxErrStr := "            0"
+		if best.maxErr > 0 {
+			maxErrStr = fmt.Sprintf("%12.3e", best.maxErr)
+		}
+		fmt.Printf("| %-14s | %-30s | %8s | %9.4f | %12s |\n",
+			ds.name, best.mode, tier, best.ratio, maxErrStr)
 	}
 	fmt.Println()
 
@@ -337,5 +374,31 @@ func TestM3Harness(t *testing.T) {
 	fmt.Printf("- **Financial resists compression** (best %.4f at %s): "+
 		"log-normal random walks produce near-uniform ratio distributions.\n",
 		finBestRatio, finBestMode)
+
+	// 6. Adaptive vs Quantized comparison.
+	var adaptFine, adaptCoarse, q3sf, q6sf float64
+	for _, r := range results {
+		if r.dataset == "Sensor" {
+			switch r.mode {
+			case "Adaptive(ε=1e-04)/Reanchor":
+				adaptFine = r.ratio
+			case "Adaptive(ε=1e-03)/Reanchor":
+				adaptCoarse = r.ratio
+			case "Q-3sf/Reanchor":
+				q3sf = r.ratio
+			case "Q-6sf/Reanchor":
+				q6sf = r.ratio
+			}
+		}
+	}
+	if adaptFine > 0 && q6sf > 0 {
+		fmt.Printf("- **Adaptive ε=1e-4 vs Q-6sf (Sensor)**: adaptive ratio %.4f vs quantized %.4f. "+
+			"Adaptive routes exact-path ratios as float64 payloads, so it is larger than pure quantized "+
+			"when most ratios fit within tolerance, but smaller than lossless.\n", adaptFine, q6sf)
+	}
+	if adaptCoarse > 0 && q3sf > 0 {
+		fmt.Printf("- **Adaptive ε=1e-3 vs Q-3sf (Sensor)**: adaptive ratio %.4f vs Q-3sf %.4f.\n",
+			adaptCoarse, q3sf)
+	}
 	fmt.Println()
 }

@@ -663,6 +663,94 @@ func TestAdaptiveSingleValue(t *testing.T) {
 	}
 }
 
+// TestAdaptiveDriftCompensate verifies DriftCompensate works through the v4 path.
+func TestAdaptiveDriftCompensate(t *testing.T) {
+	values := makeSmoothSeries(500, 10.0, 1.002)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyAdaptive,
+		DriftMode:   codec.DriftCompensate,
+		Tolerance:   1e-3,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	if e := maxRelErr(got, values); e > 0.05 {
+		t.Errorf("max relative error %e too large for DriftCompensate adaptive", e)
+	}
+}
+
+// TestAdaptiveDefaultPrecisionBits ensures PrecisionBits=0 is handled (defaults to 16).
+func TestAdaptiveDefaultPrecisionBits(t *testing.T) {
+	values := makeSmoothSeries(200, 5.0, 1.001)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 0, // should default to 16 inside encodeAdaptive
+		Tolerance:     1e-3,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := codec.Decode(&buf); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+// TestAdaptivePrecisionBitsCapped verifies PrecisionBits>16 is capped to 16.
+func TestAdaptivePrecisionBitsCapped(t *testing.T) {
+	values := makeSmoothSeries(200, 5.0, 1.001)
+	var bufCapped, buf16 bytes.Buffer
+	if err := codec.Encode(values, &bufCapped, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 24, // >16, should be capped to 16
+		Tolerance:     1e-3,
+	}); err != nil {
+		t.Fatalf("encode capped: %v", err)
+	}
+	if err := codec.Encode(values, &buf16, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 16,
+		Tolerance:     1e-3,
+	}); err != nil {
+		t.Fatalf("encode 16: %v", err)
+	}
+	// Both must produce identical streams (capped to the same precision).
+	if !bytes.Equal(bufCapped.Bytes(), buf16.Bytes()) {
+		t.Errorf("PrecisionBits=24 and PrecisionBits=16 produced different streams (%d vs %d bytes)",
+			bufCapped.Len(), buf16.Len())
+	}
+}
+
+// TestAdaptiveDriftCompensateExactPath exercises ClassNormalExact + DriftCompensate
+// in decodeRans6 (Tolerance=0 forces all normals through the exact float64 path).
+func TestAdaptiveDriftCompensateExactPath(t *testing.T) {
+	values := makeSmoothSeries(300, 1.0, 1.003)
+	var buf bytes.Buffer
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{
+		EntropyMode: codec.EntropyAdaptive,
+		DriftMode:   codec.DriftCompensate,
+		Tolerance:   0.0, // all normals → ClassNormalExact
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := codec.Decode(&buf)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != len(values) {
+		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
+	}
+	if e := maxRelErr(got, values); e > 1e-9 {
+		t.Errorf("max relative error %e > 1e-9 with tolerance=0 DriftCompensate", e)
+	}
+}
+
 // makeSmoothSeries generates a geometric series starting at start,
 // multiplied by factor each step.
 func makeSmoothSeries(n int, start, factor float64) []float64 {
