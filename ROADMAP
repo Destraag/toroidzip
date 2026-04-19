@@ -60,9 +60,14 @@ Comparison targets:
 Apply findings to refine M3 results and feed into M5 design.
 
 Tasks:
-- [ ] Shell/Makefile benchmark harness calling external binaries if present
-- [ ] Unified CSV/markdown output combining ToroidZip and external results
-- [ ] Document per-class winner and margin
+- [x] Shell benchmark harness: `scripts/bench_m4.sh` + `scripts/gen_datasets/main.go`
+      - Generates 6 synthetic .f64 datasets (same generators as M3)
+      - Runs ToroidZip Q-3sf/Reanchor (M3 winner) + zstd/brotli/fpzip if installed
+      - Skips missing tools with install hint; measures ratio + encode MB/s
+      - Outputs markdown table + per-dataset winner summary
+      - Usage: `./scripts/bench_m4.sh [--n N] [--keep]`
+- [ ] Run harness with external tools installed; record results
+- [ ] Document per-class winner and margin in ROADMAP
 
 ### Milestone 5 — Adaptive entropy model (ongoing refinement)
 Version 4 stream: per-ratio hybrid mode. Justified by M3/M4 benchmark data.
