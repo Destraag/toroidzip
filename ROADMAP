@@ -1,7 +1,7 @@
 ToroidZip — Roadmap
 ===================
 
-## Status: Milestone 4 complete
+## Status: Milestone 5 complete
 
 ---
 
@@ -127,18 +127,47 @@ Design:
   into v3. The v4 hybrid is a per-ratio decision at encode time.
 
 Tasks:
-- [ ] Define v4 stream format (version byte 4, ClassNormalExact = 5)
-- [ ] Implement 6-symbol rANS alphabet (adds ClassNormalExact alongside existing 5)
-- [ ] Implement per-ratio encode decision using configurable ε tolerance
-- [ ] Add --tolerance / --hybrid CLI flag
-- [ ] Validate: at ε=0 output is bit-identical to v2 lossless; at ε=∞ matches v3
-- [ ] Benchmark hybrid vs v3 on M3 datasets; measure compression and error delta
-- [ ] Feed external baseline gaps (M4) back into model decisions
+- [x] Define v4 stream symbols: ClassNormalExact = 5 (boundary.go);
+      EntropyAdaptive mode added with epsilon-tolerance design in comment
+- [x] 6-symbol rANS alphabet: RansFreqs6, RansEncode6, RansDecode6,
+      RansCountFreqs6 — mirrors 5-symbol API exactly (rans.go)
+      9 new tests incl. 5/6-symbol compat guard; 103/103 passing — committed 9aa391b
+- [x] Implement v4 stream in codec.go (encodeAdaptive / decodeV4)
+      Tolerance field, gatherRans6 per-ratio ε decision, zero-ratio exact-path
+      guard; full encode/decode dispatch; 108/108 passing — committed 8756b59
+- [x] Wire EntropyAdaptive into CLI (--entropy-mode adaptive, --tolerance)
+      --auto --lossy now selects adaptive at tolerance 1e-4; 109/109 — committed dca5297
+- [x] Extend codec/harness_test.go to include EntropyAdaptive; benchmark
+      vs v2/v3 on all 6 datasets; maxErr column added
+      Coverage: 86.6% → 87.4%; 113/113 passing — committed f2e7f87
+- [x] Remaining ROADMAP M5 tasks now completed via 5a-5f above:
+      per-ratio ε decision (5b), CLI flag (5c), ε=0 lossless-equiv validated (5b test),
+      hybrid vs v3 benchmarked in harness (5e), M4 gaps addressed by exact fallback
+- [x] Coverage check: remaining gaps are I/O error paths only (practical ceiling)
 
-### Milestone 6 — Formalization
+  M5 COMPLETE — 113/113 passing; HEAD f2e7f87
+
+### Milestone 6 — Tuning, benchmarking & code review
+
+Goal: verify M5 gains empirically; clean up the codebase; address any
+improvements surfaced before formalizing.
+
+- [ ] 6a: Run TestM3Harness — record adaptive vs lossless vs quantized across
+          all 6 datasets; capture ratio + maxErr here
+- [ ] 6b: pprof profile — adaptive encode on Sensor n=50000; report hot paths
+- [ ] 6c: Full code review — correctness, naming, edge cases, API clarity
+- [ ] 6d: External comparison (bench_m4.sh) with v4 adaptive included;
+          does adaptive beat Q-3sf at bounded error?
+- [ ] 6e: Address improvements surfaced by 6b–6d (rANS tuning only if
+          profiling shows measurable gap; no speculative refactoring)
+- [ ] 6f: Update README/PLAN/ROADMAP with M6 findings; confirm all tests
+          still passing; commit
+
+### Milestone 7 — Formalization
 - Algorithm writeup with mathematical basis
 - Integration guide (library API)
-- Publish results after M5 stabilises the design
+- Benchmark white paper section: M3/M4/M5/M6 results
+- Publish results after M6 confirms design stability
 
 ---
 

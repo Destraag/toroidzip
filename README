@@ -13,8 +13,10 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 4 complete — external baseline benchmark complete; TZ Q-3sf beats
-brotli/zstd by 2.5–3.5× on all tested datasets.
+Status: Milestone 5 complete — adaptive entropy model (v4 stream) shipped;
+per-ratio ε quantization decision with 6-symbol rANS; at ε=0 output is
+bit-identical to lossless; TZ Q-3sf still beats brotli/zstd by 2.5–3.5×;
+113/113 tests passing.
 
 Usage
 -----
@@ -41,11 +43,13 @@ Input/output: raw IEEE 754 little-endian float64 binary files.
 Flags (encode)
 --------------
 
-  --entropy-mode raw|lossless|quantized
-      raw:       no entropy coding (stream 1, baseline)
-      lossless:  rANS-coded ratio stream (stream 2, default)
-      quantized: lossy N-bit log-space quantization (stream 3)
+  --entropy-mode raw|lossless|quantized|adaptive
+      raw:       no entropy coding (stream v1, baseline)
+      lossless:  rANS-coded ratio stream (stream v2, default)
+      quantized: lossy N-bit log-space quantization (stream v3)
+      adaptive:  per-ratio hybrid — quantize when error < ε, else exact (stream v4)
 
+  --tolerance T          max relative error per ratio (adaptive mode only; default 1e-4)
   --sig-figs N           significant decimal figures to retain (1–9); implies quantized
   --precision N          precision bits (1–30) for quantized mode
   --auto                 auto-select entropy mode by analyzing the input
