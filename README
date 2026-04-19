@@ -13,7 +13,8 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 2 complete — rANS entropy coding, quantization, drift analysis.
+Status: Milestone 4 complete — external baseline benchmark complete; TZ Q-3sf beats
+brotli/zstd by 2.5–3.5× on all tested datasets.
 
 Usage
 -----
@@ -30,8 +31,10 @@ Usage
   # Auto-select entropy mode from data
   toroidzip encode --auto input.f64 output.tzrz
 
-  # Analyze drift characteristics before encoding
+  # Analyze data before encoding (precision, drift, lossless viability)
   toroidzip analyze input.f64
+  # Output includes: recommended precision (tier-ceiling bumped), identity
+  # fraction with lossless viability warning, drift mode speed tradeoff note.
 
 Input/output: raw IEEE 754 little-endian float64 binary files.
 
@@ -56,6 +59,8 @@ Structure
   codec/          encode/decode logic, boundary classification, rANS, quantization
   codec/analyze.go  AnalyzeDrift, AnalyzePrecision, ExtractNormalRatios
   cmd/toroidzip/  CLI binary (encode, decode, analyze subcommands)
+  scripts/        bench_m4.sh — external baseline benchmark vs zstd/brotli/fpzip
+                  gen_datasets/ — synthetic .f64 dataset generator
   PLAN            algorithm design and session log
   ROADMAP         milestone tracker
 

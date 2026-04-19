@@ -1,7 +1,7 @@
 ToroidZip — Roadmap
 ===================
 
-## Status: Milestone 2 complete
+## Status: Milestone 4 complete
 
 ---
 
@@ -41,10 +41,16 @@ Dataset suite (implemented in `codec/bench_test.go`):
 Metrics: compression ratio, encode MB/s, decode MB/s
 
 Tasks:
-- [ ] Benchmark harness: run all modes × datasets, emit markdown table
-- [ ] Tune rANS symbol distribution per data class
-- [ ] Profile hot paths (ratio compute loop, rANS table build)
-- [ ] Identify winning/losing data classes and document root causes
+- [x] Benchmark harness: full EntropyMode × DriftMode × PrecisionBits matrix
+      (`codec/harness_test.go`) — committed `84498cd`
+- [x] Identify winning/losing data classes and document root causes
+      Key findings:
+        - Q-3sf/Reanchor wins on ratio (0.25) across all 6 classes
+        - Q-6sf == Q-9sf bytes (both u32 tier; extra precision is free)
+        - Lossless barely compresses smooth data (IdentityEpsilon=1e-9 too tight)
+        - DriftReanchor is ~3.5× faster than DriftCompensate; identical output size
+- [ ] Tune rANS symbol distribution per data class   (deferred → M5)
+- [ ] Profile hot paths (ratio compute loop, rANS table build)  (deferred → M5)
 
 ### Milestone 4 — External baselines
 One-off comparison against established codecs via shell script / Makefile
@@ -62,12 +68,25 @@ Apply findings to refine M3 results and feed into M5 design.
 Tasks:
 - [x] Shell benchmark harness: `scripts/bench_m4.sh` + `scripts/gen_datasets/main.go`
       - Generates 6 synthetic .f64 datasets (same generators as M3)
-      - Runs ToroidZip Q-3sf/Reanchor (M3 winner) + zstd/brotli/fpzip if installed
-      - Skips missing tools with install hint; measures ratio + encode MB/s
-      - Outputs markdown table + per-dataset winner summary
-      - Usage: `./scripts/bench_m4.sh [--n N] [--keep]`
-- [ ] Run harness with external tools installed; record results
-- [ ] Document per-class winner and margin in ROADMAP
+      - Tests TZ at Q-3sf/6sf/9sf (Reanchor) + zstd + brotli + fpzip if installed
+      - --effort fast|best|both controls lossless codec levels
+      - --sig-figs N tests a single precision
+      - Per-tier summary: lossless tier winner + TZ vs best lossless % per precision
+      - Overall ranking table (all codecs by avg ratio, labeled lossy/lossless)
+      - Skips missing tools with platform-specific install hints
+      - Usage: `./scripts/bench_m4.sh [--n N] [--effort fast|best|both] [--sig-figs N] [--keep]`
+- [x] Run harness with zstd + brotli installed; record results
+- [x] Document per-class winner and margin in ROADMAP
+      M4 results (n=5000, zstd v1.5.6 + brotli, fpzip skipped — no Windows binary):
+        Rank 1: TZ Q-3sf/Reanchor  lossy    avg ratio 0.255  (best overall)
+        Rank 2: TZ Q-6sf/Reanchor  lossy    avg ratio 0.504  (= Q-9sf — same u32 tier)
+        Rank 3: TZ Q-9sf/Reanchor  lossy    avg ratio 0.504
+        Rank 4: brotli q=6         lossless avg ratio 0.845
+        Rank 5: brotli q=11        lossless avg ratio 0.860
+        Rank 6: zstd level 19      lossless avg ratio 0.897
+        Rank 7: zstd level 3       lossless avg ratio 0.951
+      Notable: zstd ratio > 1.0 on `financial` dataset (incompressible random walk).
+      TZ Q-6sf beats best lossless by 25–47% across all datasets.
 
 ### Analyze improvements (from M3 findings)
 
