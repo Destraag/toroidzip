@@ -592,6 +592,14 @@ func gatherRans6(values []float64, opts EncodeOptions) (classes []byte, payloads
 	}
 	tol := opts.Tolerance
 
+	// fastPath: if the analytical worst-case quantization error for any ratio at
+	// this precision is already below tol, every ClassNormal ratio is guaranteed
+	// to pass the per-ratio check. We skip the check entirely in that case.
+	// delta = 2^(QuantMaxLog2R/2^bits) - 1  (half bucket-width in linear space).
+	levels := uint32(1) << bits
+	delta := math.Pow(2, QuantMaxLog2R/float64(levels)) - 1
+	fastPath := tol > 0 && delta < tol
+
 	payloads = make([]byte, 0, len(values)*4)
 	payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[0]))
 	classes = make([]byte, 0, len(values)-1)
@@ -627,22 +635,23 @@ func gatherRans6(values []float64, opts EncodeOptions) (classes []byte, payloads
 		case ClassNormal:
 			sym := QuantizeRatio(ratio, bits)
 			dequant := DequantizeRatio(sym, bits)
-			var relErr float64
-			if ratio != 0 {
-				relErr = math.Abs(dequant/ratio - 1.0)
-			} else {
-				relErr = math.MaxFloat64 // zero ratio cannot be quantized; force exact path
+			// ratio==0 can never be quantized (decoder would reconstruct prev*dequant≠0).
+			// Otherwise, in fastPath delta<tol guarantees relErr<tol without checking.
+			exact := ratio == 0
+			if !exact && !fastPath {
+				relErr := math.Abs(dequant/ratio - 1.0)
+				exact = relErr >= tol
 			}
-			if relErr < tol {
-				// Quantized path: compact uint16 symbol.
-				classes = append(classes, byte(ClassNormal))
-				payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym))
-				ratio = dequant // encoder tracks dequantized ratio for drift
-			} else {
+			if exact {
 				// Exact fallback: full float64, no information loss.
 				classes = append(classes, byte(ClassNormalExact))
 				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
 				// ratio unchanged — encoder and decoder both use the original float64
+			} else {
+				// Quantized path: compact uint16 symbol.
+				classes = append(classes, byte(ClassNormal))
+				payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym))
+				ratio = dequant // encoder tracks dequantized ratio for drift
 			}
 			if dm == DriftCompensate {
 				prev = kp.multiply(ratio)

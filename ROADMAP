@@ -234,8 +234,10 @@ improvements surfaced before formalizing.
           Smooth datasets: adaptive ≈ Q-3sf (0.2550 vs 0.2549; <0.05% overhead)
           Hard dataset (neuralweight): adaptive 0.3651 vs Q-3sf 0.2561 (expected; bounded error requires more bits)
           Conclusion: adaptive buys bounded error guarantee at ~7% avg size cost; cost is near-zero on smooth data
-- [ ] 6e: Address improvements surfaced by 6b–6d (rANS tuning only if
-          profiling shows measurable gap; no speculative refactoring)
+- [x] 6e: Analytical fast-path in gatherRans6
+          `delta = 2^(QuantMaxLog2R/2^bits) - 1` computed once; skip per-ratio relErr
+          check when delta < tol (guaranteed all ratios pass). `ratio==0` guard preserved.
+          Speedup: 56.66 → 59.40 MB/s (+4.9%). rANS table tuning: 1.7% of time — no gap.
 - [ ] 6f: Update README/PLAN/ROADMAP with M6 findings; confirm all tests
           still passing; commit
 
