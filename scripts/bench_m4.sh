@@ -16,7 +16,7 @@
 #   --n N          number of float64 values per dataset (default 50000)
 #   --sig-figs N   test only this precision (default: test 3, 6, and 9 sig figs)
 #   --effort fast|best  lossless codec effort: fast=low level, best=max level (default: both)
-#   --adaptive     also run EntropyAdaptive at tolerance 1e-4 (default PrecisionBits=16)
+#   --adaptive     also run EntropyAdaptive (v5) at tolerances 1e-6 and 1e-4 (default PrecisionBits=16)
 #   --keep         keep the bench_data/ temp directory after the run
 
 set -euo pipefail
@@ -27,7 +27,7 @@ KEEP=0
 PRECISIONS=(3 6 9)
 EFFORT=both   # fast | best | both
 RUN_ADAPTIVE=0
-ADAPTIVE_TOL=1e-4
+ADAPTIVE_TOLS=(1e-6 1e-4)
 ADAPTIVE_BITS=16
 
 while [[ $# -gt 0 ]]; do
@@ -100,7 +100,7 @@ echo "## M4 External Baseline Benchmark — n=$N values ($(( UNCOMPRESSED_BYTES 
 echo ""
 printf "ToroidZip modes tested: %s(Reanchor; use --sig-figs N to test one precision)\n" \
   "$(printf "Q-%ssf " "${PRECISIONS[@]}")"
-[[ $RUN_ADAPTIVE -eq 1 ]] && echo "  + Adaptive ε=${ADAPTIVE_TOL} ${ADAPTIVE_BITS}b (--adaptive)"
+[[ $RUN_ADAPTIVE -eq 1 ]] && echo "  + Adaptive (v5) ε=${ADAPTIVE_TOLS[*]} ${ADAPTIVE_BITS}b (--adaptive)"
 echo "Ratio = encoded_bytes / uncompressed_bytes (lower is better)."
 echo "External codecs are lossless; ToroidZip rows are lossy at the stated precision."
 echo ""
@@ -175,12 +175,14 @@ for ds in "${DATASETS[@]}"; do
     print_row "$ds" "toroidzip" "Q-${sf}sf/Reanchor" "$enc" "$ms"
   done
 
-  # ToroidZip adaptive
+  # ToroidZip adaptive (v5) — one row per tolerance
   if [[ $RUN_ADAPTIVE -eq 1 ]]; then
-    tz_adap="$BENCH_DIR/${ds}.adaptive.tzrz"
-    ms=$(time_compress "$TZ encode --entropy-mode adaptive --tolerance ${ADAPTIVE_TOL} --precision ${ADAPTIVE_BITS} $f $tz_adap" "$tz_adap")
-    enc=$(file_bytes "$tz_adap")
-    print_row "$ds" "toroidzip" "Adap-ε${ADAPTIVE_TOL}" "$enc" "$ms"
+    for ADAPTIVE_TOL in "${ADAPTIVE_TOLS[@]}"; do
+      tz_adap="$BENCH_DIR/${ds}.adaptive${ADAPTIVE_TOL}.tzrz"
+      ms=$(time_compress "$TZ encode --entropy-mode adaptive --tolerance ${ADAPTIVE_TOL} --precision ${ADAPTIVE_BITS} $f $tz_adap" "$tz_adap")
+      enc=$(file_bytes "$tz_adap")
+      print_row "$ds" "toroidzip" "Adap-ε${ADAPTIVE_TOL}" "$enc" "$ms"
+    done
   fi
 
   # zstd
@@ -314,10 +316,12 @@ for ds in "${DATASETS[@]}"; do
     rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.q${sf}.tzrz") ))
   done
   if [[ $RUN_ADAPTIVE -eq 1 ]]; then
-    tag="tz_adaptive"
-    rank_label["$tag"]="toroidzip"
-    rank_type["$tag"]="lossy"
-    rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.adaptive.tzrz") ))
+    for ADAPTIVE_TOL in "${ADAPTIVE_TOLS[@]}"; do
+      tag="tz_adaptive_${ADAPTIVE_TOL}"
+      rank_label["$tag"]="toroidzip"
+      rank_type["$tag"]="lossy"
+      rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.adaptive${ADAPTIVE_TOL}.tzrz") ))
+    done
   fi
   [[ $HAS_ZSTD -eq 1 ]] && for lvl in "${ZSTD_LEVELS[@]}"; do
     tag="zstd_${lvl}"
@@ -348,8 +352,8 @@ while IFS= read -r line; do
   codec="${rank_label[$tag]}"
   level_tag="${tag#*_}"
   case "$tag" in
-    tz_q*)      level="Q-${level_tag#q}sf/Reanchor" ;;
-    tz_adaptive) level="Adap-ε${ADAPTIVE_TOL}/${ADAPTIVE_BITS}b" ;;
+    tz_q*) level="Q-${level_tag#q}sf/Reanchor" ;;
+    tz_adaptive_*) level="Adap-ε${tag#tz_adaptive_}/${ADAPTIVE_BITS}b" ;;
     zstd_*)     level="level ${level_tag}" ;;
     brotli_*)   level="q=${level_tag}" ;;
     fpzip)      level="lossless" ;;

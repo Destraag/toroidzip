@@ -187,10 +187,11 @@ func TestM3Harness(t *testing.T) {
 			})
 		}
 	}
-	// Adaptive (v4): two tolerance levels × Reanchor only (Compensate and
+	// Adaptive (v5): three tolerance levels × Reanchor only (Compensate and
 	// Quantize drift modes have identical stream size; Reanchor is the
 	// representative for ratio comparison).
-	for _, tol := range []float64{1e-4, 1e-3} {
+	// ε=1e-6 exercises the ClassNormal32 (u32) mid-tier introduced in v5.
+	for _, tol := range []float64{1e-6, 1e-4, 1e-3} {
 		tolLabel := fmt.Sprintf("%.0e", tol)
 		modes = append(modes, modeSpec{
 			fmt.Sprintf("Adaptive(ε=%s)/Reanchor", tolLabel),
@@ -375,10 +376,12 @@ func TestM3Harness(t *testing.T) {
 		finBestRatio, finBestMode)
 
 	// 6. Adaptive vs Quantized comparison.
-	var adaptFine, adaptCoarse, q3sf, q6sf float64
+	var adaptTight, adaptFine, adaptCoarse, q3sf, q6sf float64
 	for _, r := range results {
 		if r.dataset == "Sensor" {
 			switch r.mode {
+			case "Adaptive(ε=1e-06)/Reanchor":
+				adaptTight = r.ratio
 			case "Adaptive(ε=1e-04)/Reanchor":
 				adaptFine = r.ratio
 			case "Adaptive(ε=1e-03)/Reanchor":
@@ -389,6 +392,12 @@ func TestM3Harness(t *testing.T) {
 				q6sf = r.ratio
 			}
 		}
+	}
+	if adaptTight > 0 {
+		fmt.Printf("- **Adaptive ε=1e-6 (u32 mid-tier, Sensor)**: ratio %.4f. "+
+			"At this tolerance most ratios exceed 16-bit precision and fall into the "+
+			"ClassNormal32 (uint32) tier, giving ~4 bytes/ratio vs 2 for u16 or 8 for float64.\n",
+			adaptTight)
 	}
 	if adaptFine > 0 && q6sf > 0 {
 		fmt.Printf("- **Adaptive ε=1e-4 vs Q-6sf (Sensor)**: adaptive ratio %.4f vs quantized %.4f. "+

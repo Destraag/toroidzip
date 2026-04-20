@@ -271,9 +271,24 @@ Tasks:
 - [x] 7d: AnalyzeTiers + TierRow added to analyze.go; runAnalyze extended with
           --tolerance/--sig-figs/--precision flags; Tier Preview section printed
           when ε is given; usage string updated; 6 new tests; 127/127 passing
-- [ ] 7e: bench_m4.sh --adaptive updated to exercise v5 path;
-          harness extended with tight-tolerance (ε=1e-6) row to show u32 tier benefit;
-          results recorded here
+- [x] 7e: bench_m4.sh updated: --adaptive now runs ε=1e-6 and ε=1e-4 (ADAPTIVE_TOLS array);
+          harness updated: Adaptive(ε=1e-06) row added, v4 comment updated to v5;
+          127/127 passing
+
+  Results (n=50 000, Sensor dataset):
+  | Mode                        | Ratio  | Enc MB/s |
+  |-----------------------------|--------|----------|
+  | Lossless/Reanchor           | 1.0007 |    318   |
+  | Adaptive(ε=1e-06)/Reanchor  | 0.4994 |     31   | ← u32 mid-tier dominates
+  | Q-6sf/Reanchor              | 0.5027 |     56   |
+  | Adaptive(ε=1e-04)/Reanchor  | 0.2537 |     58   | ← u16 fast-path
+  | Q-3sf/Reanchor              | 0.2537 |     56   |
+  | Adaptive(ε=1e-03)/Reanchor  | 0.2537 |     57   |
+
+  Key: ε=1e-6 ratio (0.4994) ≈ Q-6sf (0.5027) — u32 tier gives ~½ the bytes of
+  lossless at 3× the throughput. ε=1e-4 collapses to u16 fast-path (same ratio
+  as Q-3sf). Enc MB/s at ε=1e-6 is ~31 (per-ratio u32 checks); ε=1e-4 is ~58
+  (fast-path skips all checks).
 - [ ] 7f: README/PLAN/ROADMAP updated; all tests passing; M7 closed
 
 Note: v4 stream (ClassNormal=5 alphabet) remains decodeable — Decode dispatches
