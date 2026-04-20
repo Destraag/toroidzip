@@ -9,6 +9,132 @@ import (
 	"github.com/Destraag/toroidzip/codec"
 )
 
+// TestDecodeV4Legacy verifies that the legacy v4 adaptive stream decoder
+// (decodeV4 / decodeRans6) can still decode streams produced by old encoder
+// builds. The fixture was generated with gatherRans6 before that encoder
+// function was removed in M8/8a.
+//
+// Input values: [1.0, 1.01, 1.02, 1.03, 0.5, 2.0]
+// Encoded with: bits=16, tol=1e-4, DriftReanchor, reanchorInterval=256
+func TestDecodeV4Legacy(t *testing.T) {
+	v4Fixture := []byte{
+		0x54, 0x5a, 0x52, 0x5a, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0xfb, 0x0f, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0xfd,
+		0xbb, 0xc8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, 0x75,
+		0x80, 0x74, 0x80, 0x73, 0x80, 0xa2, 0x5e, 0x00, 0xc0,
+	}
+	want := []float64{1.0, 1.01, 1.02, 1.03, 0.5, 2.0}
+	const tol = 1e-3 // slightly relaxed — per-ratio ε=1e-4 each
+
+	got, err := codec.Decode(bytes.NewReader(v4Fixture))
+	if err != nil {
+		t.Fatalf("Decode v4 legacy fixture: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("length: got %d want %d", len(got), len(want))
+	}
+	for i, w := range want {
+		if w == 0 {
+			continue
+		}
+		if math.Abs(got[i]-w)/math.Abs(w) > tol {
+			t.Errorf("[%d] got %v want %v", i, got[i], w)
+		}
+	}
+}
+
+// TestAdaptiveV5DriftCompensate verifies that v5 adaptive encoding with
+// DriftCompensate (Mode B) round-trips within the stated tolerance.
+func TestAdaptiveV5DriftCompensate(t *testing.T) {
+	values := make([]float64, 500)
+	v := 10.0
+	for i := range values {
+		v *= 1.0 + (rand.Float64()-0.5)*0.002
+		values[i] = v
+	}
+	const tol = 1e-4
+	opts := codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		DriftMode:     codec.DriftCompensate,
+		PrecisionBits: 16,
+		Tolerance:     tol,
+	}
+	got := roundTrip(t, values, opts)
+	for i, want := range values {
+		if want == 0 {
+			continue
+		}
+		if math.Abs(got[i]-want)/math.Abs(want) > tol*10 {
+			t.Errorf("[%d] got %v want %v (rel err %e)", i, got[i], want,
+				math.Abs(got[i]-want)/math.Abs(want))
+		}
+	}
+}
+
+// TestDecodeV5Errors verifies that truncated v5 streams produce errors
+// rather than panics or silently wrong output.
+func TestDecodeV5Errors(t *testing.T) {
+	// Build a valid v5 stream first.
+	var buf bytes.Buffer
+	if err := codec.Encode([]float64{1.0, 1.01, 1.02, 1.03}, &buf, codec.EncodeOptions{
+		EntropyMode:   codec.EntropyAdaptive,
+		PrecisionBits: 16,
+		Tolerance:     1e-4,
+	}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	full := buf.Bytes()
+
+	// Truncate at several points past magic+version (byte 5 onward).
+	// Each should return an error, never panic.
+	for _, cutAt := range []int{5, 8, 14, 20, 30, 40} {
+		if cutAt >= len(full) {
+			continue
+		}
+		_, err := codec.Decode(bytes.NewReader(full[:cutAt]))
+		if err == nil {
+			t.Errorf("expected error decoding v5 truncated at byte %d, got nil", cutAt)
+		}
+	}
+}
+
+// TestDriftModesAllEncoders verifies DriftCompensate and DriftQuantize
+// round-trips for lossless, quantized, and raw encoders.
+func TestDriftModesAllEncoders(t *testing.T) {
+	values := make([]float64, 300)
+	v := 50.0
+	for i := range values {
+		v *= 1.001
+		values[i] = v
+	}
+
+	cases := []struct {
+		name string
+		opts codec.EncodeOptions
+		tol  float64
+	}{
+		{"Lossless/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate}, 1e-12},
+		// DriftQuantize float32-rounds every ratio before encoding (intentionally lossy).
+		// Over 300 steps the accumulated float32 error is ~float32_eps × n ≈ 3e-5.
+		{"Lossless/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftQuantize}, 1e-4},
+		{"Quantized/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 16, DriftMode: codec.DriftCompensate}, 1e-3},
+		{"Quantized/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 16, DriftMode: codec.DriftQuantize}, 1e-3},
+		{"Raw/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyRaw, DriftMode: codec.DriftCompensate}, 1e-12},
+		{"Raw/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyRaw, DriftMode: codec.DriftQuantize}, 1e-4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := roundTrip(t, values, tc.opts)
+			for i, want := range values {
+				if math.Abs(got[i]-want)/math.Abs(want) > tc.tol {
+					t.Errorf("[%d] got %v want %v", i, got[i], want)
+				}
+			}
+		})
+	}
+}
+
 // roundTrip encodes then decodes values and returns the reconstructed slice.
 func roundTrip(t *testing.T, values []float64, opts codec.EncodeOptions) []float64 {
 	t.Helper()

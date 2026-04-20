@@ -267,6 +267,24 @@ func BenchmarkQuantizeRatio(b *testing.B) {
 	}
 }
 
+// TestSigFigsToToleranceBounds verifies clamping at n<1 and n>9.
+func TestSigFigsToToleranceBounds(t *testing.T) {
+	low := codec.SigFigsToTolerance(0)
+	if low != codec.SigFigsToTolerance(1) {
+		t.Errorf("SigFigsToTolerance(0) = %g, want same as SigFigsToTolerance(1) = %g",
+			low, codec.SigFigsToTolerance(1))
+	}
+	high := codec.SigFigsToTolerance(99)
+	if high != codec.SigFigsToTolerance(9) {
+		t.Errorf("SigFigsToTolerance(99) = %g, want same as SigFigsToTolerance(9) = %g",
+			high, codec.SigFigsToTolerance(9))
+	}
+	// Spot-check: n=4 → 0.5e-4
+	if got, want := codec.SigFigsToTolerance(4), 0.5e-4; math.Abs(got-want) > 1e-15 {
+		t.Errorf("SigFigsToTolerance(4) = %g, want %g", got, want)
+	}
+}
+
 // --- helpers ---
 
 // makeLogNormalRatios generates n ratios with log₂(ratio) varying sinusoidally

@@ -136,6 +136,10 @@ func runEncode(args []string) error {
 	}
 
 	// --auto: run analysis and override settings.
+	// NOTE: the tolerance set inside this block intentionally bypasses the
+	// flag-validation guard above (which rejects --tolerance without
+	// --entropy-mode adaptive). Here we know the mode is being forced to
+	// adaptive internally, so it is safe to set tolerance directly.
 	if *auto {
 		intervals := []int{64, 128, 256, 512}
 		driftRpt := codec.AnalyzeDrift(values, intervals)
