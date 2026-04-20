@@ -226,6 +226,8 @@ func RansDecode(data []byte, freqs RansFreqs, count int) ([]byte, error) {
 // Adds ClassNormalExact (5) to the existing 5-symbol alphabet.
 // API mirrors the 5-symbol functions above; internals are identical
 // in structure — only the alphabet size differs.
+// NOTE: v4 stream is superseded by v5 (7-symbol). The 6-symbol functions
+// remain to support decoding of existing v4-encoded streams.
 // ============================================================
 
 // ransNumSyms6 is the alphabet size for the v4 adaptive stream.
@@ -363,6 +365,173 @@ func RansDecode6(data []byte, freqs RansFreqs6, count int) ([]byte, error) {
 	}
 
 	t := buildRansTables6(freqs)
+	x := binary.LittleEndian.Uint64(data[:8])
+	pos := 8
+
+	classes := make([]byte, count)
+	for i := 0; i < count; i++ {
+		slot := uint32(x) & (ransM - 1)
+		sym := t.decode[slot]
+		s := t.sym[sym]
+		classes[i] = sym
+
+		x = uint64(s.freq)*(x>>ransScaleBits) + uint64(slot) - uint64(s.cumul)
+
+		for x < uint64(ransL) {
+			if pos < len(data) {
+				x = (x << 8) | uint64(data[pos])
+				pos++
+			} else {
+				x <<= 8
+			}
+		}
+	}
+
+	return classes, nil
+}
+
+// ============================================================
+// 7-symbol rANS — v5 adaptive stream (EntropyAdaptive)
+// Adds ClassNormal32 (6) to the 6-symbol alphabet.
+// API mirrors the 6-symbol functions above; internals are identical
+// in structure — only the alphabet size differs.
+// ============================================================
+
+// ransNumSyms7 is the alphabet size for the v5 adaptive stream.
+const ransNumSyms7 = 7
+
+// RansFreqs7 is a normalised frequency table for the 7-symbol v5 alphabet.
+// Invariants: sum(freqs) == ransM, freqs[i] >= 1 for all i.
+type RansFreqs7 [ransNumSyms7]uint32
+
+// ransTables7 holds precomputed encode/decode tables for the 7-symbol alphabet.
+type ransTables7 struct {
+	sym    [ransNumSyms7]ransSym
+	decode [ransM]byte
+}
+
+// buildRansTables7 constructs encode/decode tables from a 7-symbol frequency array.
+func buildRansTables7(freqs RansFreqs7) ransTables7 {
+	var t ransTables7
+	var c uint32
+	for i := 0; i < ransNumSyms7; i++ {
+		t.sym[i] = ransSym{freq: freqs[i], cumul: c}
+		for s := c; s < c+freqs[i]; s++ {
+			t.decode[s] = byte(i)
+		}
+		c += freqs[i]
+	}
+	return t
+}
+
+// normalizeRansFreqs7 scales raw 7-symbol counts to sum == ransM, each >= 1.
+func normalizeRansFreqs7(raw [ransNumSyms7]uint64) RansFreqs7 {
+	var total uint64
+	for _, v := range raw {
+		total += v
+	}
+
+	var freqs RansFreqs7
+	if total == 0 {
+		each := uint32(ransM / ransNumSyms7)
+		for i := range freqs {
+			freqs[i] = each
+		}
+		freqs[0] += uint32(ransM) - each*uint32(ransNumSyms7)
+		return freqs
+	}
+
+	var sum uint32
+	maxVal, maxIdx := uint32(0), 0
+	for i, v := range raw {
+		f := uint32(math.Round(float64(v) / float64(total) * ransM))
+		if f < 1 {
+			f = 1
+		}
+		freqs[i] = f
+		sum += f
+		if f > maxVal {
+			maxVal, maxIdx = f, i
+		}
+	}
+
+	switch {
+	case sum < ransM:
+		freqs[maxIdx] += ransM - sum
+	case sum > ransM:
+		excess := sum - ransM
+		if freqs[maxIdx] > excess {
+			freqs[maxIdx] -= excess
+		} else {
+			for i := range freqs {
+				if freqs[i] > 1 && excess > 0 {
+					freqs[i]--
+					excess--
+				}
+			}
+		}
+	}
+
+	return freqs
+}
+
+// RansCountFreqs7 counts RatioClass occurrences in classes (7-symbol alphabet)
+// and returns a frequency table normalised to sum exactly to ransM.
+func RansCountFreqs7(classes []byte) RansFreqs7 {
+	var raw [ransNumSyms7]uint64
+	for _, c := range classes {
+		if int(c) < ransNumSyms7 {
+			raw[c]++
+		}
+	}
+	return normalizeRansFreqs7(raw)
+}
+
+// RansEncode7 encodes a stream of RatioClass bytes using the 7-symbol rANS alphabet.
+// Returns nil for empty input.
+func RansEncode7(classes []byte, freqs RansFreqs7) []byte {
+	if len(classes) == 0 {
+		return nil
+	}
+	t := buildRansTables7(freqs)
+
+	norm := make([]byte, 0, len(classes)/2)
+	x := uint64(ransL)
+
+	for i := len(classes) - 1; i >= 0; i-- {
+		s := t.sym[classes[i]]
+		xmax := ((uint64(ransL) >> ransScaleBits) << 8) * uint64(s.freq)
+		for x >= xmax {
+			norm = append(norm, byte(x))
+			x >>= 8
+		}
+		x = (x/uint64(s.freq))<<ransScaleBits + uint64(s.cumul) + x%uint64(s.freq)
+	}
+
+	var stateBuf [8]byte
+	binary.LittleEndian.PutUint64(stateBuf[:], x)
+
+	for i, j := 0, len(norm)-1; i < j; i, j = i+1, j-1 {
+		norm[i], norm[j] = norm[j], norm[i]
+	}
+
+	out := make([]byte, 8+len(norm))
+	copy(out[:8], stateBuf[:])
+	copy(out[8:], norm)
+	return out
+}
+
+// RansDecode7 decodes count RatioClass bytes from data using the 7-symbol alphabet.
+// data must start with the 8-byte state header produced by RansEncode7.
+func RansDecode7(data []byte, freqs RansFreqs7, count int) ([]byte, error) {
+	if count == 0 {
+		return nil, nil
+	}
+	if len(data) < 8 {
+		return nil, fmt.Errorf("rans: decode7: stream too short (%d bytes, need ≥8)", len(data))
+	}
+
+	t := buildRansTables7(freqs)
 	x := binary.LittleEndian.Uint64(data[:8])
 	pos := 8
 

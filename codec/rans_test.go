@@ -296,3 +296,106 @@ func ransRoundTrip6(t *testing.T, classes []byte) {
 		}
 	}
 }
+
+// ransRoundTrip7 encodes and decodes classes via the 7-symbol codec,
+// asserting byte-exact equality.
+func ransRoundTrip7(t *testing.T, classes []byte) {
+	t.Helper()
+	freqs := codec.RansCountFreqs7(classes)
+	encoded := codec.RansEncode7(classes, freqs)
+	decoded, err := codec.RansDecode7(encoded, freqs, len(classes))
+	if err != nil {
+		t.Fatalf("RansDecode7: %v", err)
+	}
+	if len(decoded) != len(classes) {
+		t.Fatalf("length mismatch: got %d want %d", len(decoded), len(classes))
+	}
+	for i := range classes {
+		if decoded[i] != classes[i] {
+			t.Errorf("index %d: got %d want %d", i, decoded[i], classes[i])
+		}
+	}
+}
+
+// TestRansEncode7EmptyInput checks that encoding nil/empty returns nil.
+func TestRansEncode7EmptyInput(t *testing.T) {
+	var freqs codec.RansFreqs7
+	for i := range freqs {
+		freqs[i] = 1
+	}
+	freqs[0] += uint32(4096 - 7)
+	encoded := codec.RansEncode7(nil, freqs)
+	if encoded != nil {
+		t.Errorf("expected nil for empty input, got %d bytes", len(encoded))
+	}
+}
+
+// TestRans7RoundTripIdentityOnly verifies all-ClassIdentity streams.
+func TestRans7RoundTripIdentityOnly(t *testing.T) {
+	classes := make([]byte, 5000)
+	ransRoundTrip7(t, classes)
+}
+
+// TestRans7RoundTripMixedSymbols verifies round-trip with all 7 symbols present.
+func TestRans7RoundTripMixedSymbols(t *testing.T) {
+	classes := make([]byte, 7000)
+	for i := range classes {
+		classes[i] = byte(i % 7)
+	}
+	ransRoundTrip7(t, classes)
+}
+
+// TestRans7RoundTripNormal32Heavy verifies a stream dominated by ClassNormal32.
+func TestRans7RoundTripNormal32Heavy(t *testing.T) {
+	classes := make([]byte, 5000)
+	for i := range classes {
+		switch i % 10 {
+		case 0:
+			classes[i] = byte(codec.ClassIdentity)
+		case 1:
+			classes[i] = byte(codec.ClassNormalExact)
+		case 2:
+			classes[i] = byte(codec.ClassNormal32)
+		default:
+			classes[i] = byte(codec.ClassNormal)
+		}
+	}
+	ransRoundTrip7(t, classes)
+}
+
+// TestRans7CompatWith6Symbol verifies that a stream containing only symbols
+// 0-5 (no ClassNormal32) round-trips identically through both the 6-symbol
+// and 7-symbol codecs. The 7-symbol codec must be a strict superset.
+func TestRans7CompatWith6Symbol(t *testing.T) {
+	// Build a stream with symbols 0–5 only (no symbol 6 = ClassNormal32).
+	classes := makeIdentityStream(5000, 0.08)
+	// Sprinkle some ClassNormalExact (5) — valid in both 6 and 7 symbol codecs.
+	for i := range classes {
+		if i%50 == 0 {
+			classes[i] = byte(codec.ClassNormalExact)
+		}
+	}
+
+	freqs6 := codec.RansCountFreqs6(classes)
+	enc6 := codec.RansEncode6(classes, freqs6)
+	dec6, err := codec.RansDecode6(enc6, freqs6, len(classes))
+	if err != nil {
+		t.Fatalf("6-sym decode: %v", err)
+	}
+
+	freqs7 := codec.RansCountFreqs7(classes)
+	enc7 := codec.RansEncode7(classes, freqs7)
+	dec7, err := codec.RansDecode7(enc7, freqs7, len(classes))
+	if err != nil {
+		t.Fatalf("7-sym decode: %v", err)
+	}
+
+	for i := range classes {
+		if dec6[i] != classes[i] {
+			t.Fatalf("6-sym mismatch at %d: got %d want %d", i, dec6[i], classes[i])
+		}
+		if dec7[i] != classes[i] {
+			t.Fatalf("7-sym mismatch at %d: got %d want %d", i, dec7[i], classes[i])
+		}
+	}
+}

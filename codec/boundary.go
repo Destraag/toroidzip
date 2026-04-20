@@ -36,6 +36,13 @@ const (
 	// tolerance ε and is stored as a full float64 payload instead. This class
 	// never appears in v1–v3 streams and is not produced by Classify.
 	ClassNormalExact
+
+	// ClassNormal32 is used only in the v5 adaptive stream (EntropyAdaptive).
+	// It signals that the ratio passed the ε check at 30-bit precision but
+	// not at 16-bit precision, and is stored as a uint32 quantized symbol.
+	// The decoder reads a 4-byte payload and reconstructs via DequantizeRatio.
+	// This class never appears in v1–v4 streams and is not produced by Classify.
+	ClassNormal32
 )
 
 // Thresholds for boundary classification. These are tunable.
@@ -93,15 +100,18 @@ const (
 	// Use AnalyzePrecision to find the recommended precision for a data set.
 	EntropyQuantized
 
-	// EntropyAdaptive is the v4 hybrid stream. For each ClassNormal ratio,
-	// the encoder checks whether quantization error is within tolerance ε:
-	//   - error < ε  → store as uint16 quantized symbol (ClassNormal)
-	//   - error ≥ ε  → store as float64 verbatim (ClassNormalExact)
-	// The class stream uses a 6-symbol rANS alphabet.
+	// EntropyAdaptive is the v5 hybrid stream. For each ClassNormal ratio,
+	// the encoder checks quantization error against tolerance ε at two precision
+	// levels, storing the ratio in the smallest tier that satisfies the bound:
+	//   - error < ε at 16 bits  → ClassNormal   + uint16 (2 bytes)
+	//   - error < ε at 30 bits  → ClassNormal32 + uint32 (4 bytes)
+	//   - error ≥ ε at 30 bits  → ClassNormalExact + float64 (8 bytes)
+	// The class stream uses a 7-symbol rANS alphabet.
 	// At ε=0 (default Tolerance): output is bit-identical to EntropyLossless.
 	// At ε=∞: output matches EntropyQuantized at bits≤16.
 	// Set EncodeOptions.Tolerance to control ε (e.g. 1e-4 ≈ 4 sig-fig loss bound).
-	// Set EncodeOptions.PrecisionBits for the quantized symbols (capped at 16).
+	// Set EncodeOptions.PrecisionBits for the quantized symbols (capped at 16 for
+	// the fast path; the 30-bit mid tier is always tried before float64 fallback).
 	EntropyAdaptive
 )
 

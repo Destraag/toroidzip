@@ -256,10 +256,11 @@ instead of 8. Win band: ε values roughly 1e-6 to 1e-4 (tight-tolerance use case
 Fast path (delta16 < tol) unchanged — still skips all checks for common case.
 
 Tasks:
-- [ ] 7a: Add ClassNormal32=6, ClassNormalExact bumped to 7 in boundary.go;
-          update Classify/IsBoundary if needed; all existing tests still pass
-- [ ] 7b: 7-symbol rANS: RansFreqs7, RansEncode7, RansDecode7, RansCountFreqs7
-          (mirror of 6-symbol API); new rANS tests incl. 6/7-symbol compat guard
+- [x] 7a: Add ClassNormal32=6, ClassNormalExact=7 in boundary.go;
+          EntropyAdaptive comment updated to describe v5 3-tier logic;
+          all 112 existing tests pass
+- [x] 7b: 7-symbol rANS: RansFreqs7, RansEncode7, RansDecode7, RansCountFreqs7;
+          5 new tests incl. 6/7-symbol compat guard; 117/117 passing
 - [ ] 7c: v5 stream constant; gatherRans7 with tiered fallback logic;
           encodeAdaptive dispatches to gatherRans7 + writeRansBody7;
           decodeV5 added; Decode dispatches on version byte
