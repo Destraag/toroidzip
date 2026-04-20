@@ -13,10 +13,11 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 5 complete — adaptive entropy model (v4 stream) shipped;
-per-ratio ε quantization decision with 6-symbol rANS; at ε=0 output is
-bit-identical to lossless; TZ Q-3sf still beats brotli/zstd by 2.5–3.5×;
-113/113 tests passing.
+Status: Milestone 6 complete — tuning, benchmarking, and code review done;
+adaptive fast-path: analytical delta bound eliminates per-ratio Dequantize call
+when guaranteed safe (+4.9% encode speed); 2 bugs fixed (analyze subcommand,
+drift-mode CLI default); external comparison confirms adaptive ≈ Q-3sf on
+smooth data (<0.05% overhead) with bounded error guarantee; all tests passing.
 
 Usage
 -----
@@ -64,6 +65,8 @@ Structure
   codec/analyze.go  AnalyzeDrift, AnalyzePrecision, ExtractNormalRatios
   cmd/toroidzip/  CLI binary (encode, decode, analyze subcommands)
   scripts/        bench_m4.sh — external baseline benchmark vs zstd/brotli/fpzip
+                    usage: ./scripts/bench_m4.sh [--n N] [--effort fast|best|both]
+                                                  [--sig-figs N] [--adaptive] [--keep]
                   gen_datasets/ — synthetic .f64 dataset generator
   PLAN            algorithm design and session log
   ROADMAP         milestone tracker

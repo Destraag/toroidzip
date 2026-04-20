@@ -4,7 +4,7 @@ Scope: PUBLIC — milestone tracker and intent. Committed to git.
         Implementation detail, design rationale, and session notes live
         in PLAN (gitignored, internal only).
 
-## Status: Milestone 5 complete
+## Status: Milestone 6 complete
 
 ---
 
@@ -238,8 +238,7 @@ improvements surfaced before formalizing.
           `delta = 2^(QuantMaxLog2R/2^bits) - 1` computed once; skip per-ratio relErr
           check when delta < tol (guaranteed all ratios pass). `ratio==0` guard preserved.
           Speedup: 56.66 → 59.40 MB/s (+4.9%). rANS table tuning: 1.7% of time — no gap.
-- [ ] 6f: Update README/PLAN/ROADMAP with M6 findings; confirm all tests
-          still passing; commit
+- [x] 6f: README/PLAN/ROADMAP updated; all tests passing; M6 closed
 
 ### Milestone 7 — Formalization
 - Algorithm writeup with mathematical basis
