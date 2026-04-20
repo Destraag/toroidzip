@@ -266,3 +266,88 @@ func TestAnalyzePrecisionIdentityFraction(t *testing.T) {
 			rptVar.IdentityFraction)
 	}
 }
+
+// TestAnalyzeTiersEmpty verifies zero-count behaviour.
+func TestAnalyzeTiersEmpty(t *testing.T) {
+	row := codec.AnalyzeTiers(nil, 16, 1e-4)
+	if row.Total != 0 || row.U16 != 0 || row.U32 != 0 || row.F64 != 0 {
+		t.Errorf("expected all-zero TierRow for nil input, got %+v", row)
+	}
+	if eff := row.EffectiveBytesPerRatio(); eff != 0 {
+		t.Errorf("EffectiveBytesPerRatio: got %v want 0 for empty row", eff)
+	}
+}
+
+// TestAnalyzeTiersTolZero verifies that tol=0 sends everything to F64.
+func TestAnalyzeTiersTolZero(t *testing.T) {
+	ratios := []float64{1.001, 1.002, 1.003, 0.999, 0.998}
+	row := codec.AnalyzeTiers(ratios, 16, 0)
+	if row.Total != 5 || row.F64 != 5 || row.U16 != 0 || row.U32 != 0 {
+		t.Errorf("tol=0: expected all F64, got %+v", row)
+	}
+}
+
+// TestAnalyzeTiersHighTol verifies that a loose tolerance puts all normal
+// ratios into the u16 bucket (fast path should fire or all pass relErr check).
+func TestAnalyzeTiersHighTol(t *testing.T) {
+	// Ratios very close to 1 — easily within 1% tolerance at 16-bit precision.
+	ratios := make([]float64, 100)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-5
+	}
+	row := codec.AnalyzeTiers(ratios, 16, 1e-2)
+	if row.U16 != len(ratios) {
+		t.Errorf("high tol: expected all U16 (%d), got u16=%d u32=%d f64=%d",
+			len(ratios), row.U16, row.U32, row.F64)
+	}
+}
+
+// TestAnalyzeTiersTightTol verifies that a very tight tolerance forces the
+// u32 mid-tier for ratios that 16-bit precision cannot satisfy.
+func TestAnalyzeTiersTightTol(t *testing.T) {
+	// Ratios that are ClassNormal but need more than 16-bit precision to stay
+	// within ε=1e-6. Build them so they're clearly in range but spaced finely.
+	ratios := make([]float64, 50)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-4
+	}
+	row := codec.AnalyzeTiers(ratios, 16, 1e-6)
+	// With ε=1e-6 and 16 bits, delta16 ≈ 2^(4/65536)−1 ≈ 4.3e-5 >> 1e-6 so
+	// fastPath is off. Most ratios will need u32 or exact.
+	if row.U32+row.F64 == 0 {
+		t.Errorf("tight tol: expected some U32/F64 symbols, all went to U16: %+v", row)
+	}
+	if row.Total != len(ratios) {
+		t.Errorf("Total mismatch: got %d want %d", row.Total, len(ratios))
+	}
+}
+
+// TestAnalyzeTiersCountsAdd verifies U16+U32+F64 == Total always.
+func TestAnalyzeTiersCountsAdd(t *testing.T) {
+	ratios := make([]float64, 200)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-5
+	}
+	for _, tol := range []float64{1e-2, 1e-4, 1e-6} {
+		row := codec.AnalyzeTiers(ratios, 16, tol)
+		if row.U16+row.U32+row.F64 != row.Total {
+			t.Errorf("tol=%g: counts %d+%d+%d != Total %d", tol, row.U16, row.U32, row.F64, row.Total)
+		}
+	}
+}
+
+// TestAnalyzeTiersEffectiveBytesRange verifies the effective bytes/ratio is
+// between 2 (all u16) and 8 (all f64).
+func TestAnalyzeTiersEffectiveBytesRange(t *testing.T) {
+	ratios := make([]float64, 100)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-4
+	}
+	for _, tol := range []float64{1e-2, 1e-4, 1e-7} {
+		row := codec.AnalyzeTiers(ratios, 16, tol)
+		eff := row.EffectiveBytesPerRatio()
+		if eff < 2.0 || eff > 8.0 {
+			t.Errorf("tol=%g: EffectiveBytesPerRatio=%v out of [2,8]", tol, eff)
+		}
+	}
+}

@@ -218,3 +218,70 @@ func ExtractNormalRatios(values []float64, driftMode DriftMode, reanchorInterval
 	}
 	return out
 }
+
+// TierRow holds the per-tier count for a single ε value.
+type TierRow struct {
+	Epsilon float64
+	Bits    int // u16 precision bits used for the fast-path check
+	Total   int
+	U16     int // ClassNormal  — uint16 payload (2 bytes)
+	U32     int // ClassNormal32 — uint32 payload (4 bytes)
+	F64     int // ClassNormalExact — float64 payload (8 bytes)
+}
+
+// EffectiveBytesPerRatio returns the weighted average payload size in bytes.
+func (r TierRow) EffectiveBytesPerRatio() float64 {
+	if r.Total == 0 {
+		return 0
+	}
+	return float64(r.U16*2+r.U32*4+r.F64*8) / float64(r.Total)
+}
+
+// AnalyzeTiers counts how many of the supplied ClassNormal ratios land in each
+// payload tier for the given tolerance ε and u16 precision bits.  The
+// classification mirrors gatherRans7 exactly:
+//
+//   - ratio == 0                        → F64 (cannot be quantized)
+//   - fastPath or relErr(u16) < ε       → U16
+//   - relErr(u32/30-bit) < ε            → U32
+//   - otherwise                         → F64
+//
+// bits is clamped to [1, 16]; it is the PrecisionBits setting passed to the
+// encoder.  tol must be > 0; if tol == 0 every ratio is classified as F64.
+func AnalyzeTiers(ratios []float64, bits int, tol float64) TierRow {
+	if bits < 1 {
+		bits = 1
+	}
+	if bits > 16 {
+		bits = 16
+	}
+
+	const bits30 = 30
+	levels16 := uint32(1) << bits
+	delta16 := math.Pow(2, QuantMaxLog2R/float64(levels16)) - 1
+	levels30 := uint32(1) << bits30
+	delta30 := math.Pow(2, QuantMaxLog2R/float64(levels30)) - 1
+	fastPath := tol > 0 && delta16 < tol
+
+	row := TierRow{Epsilon: tol, Bits: bits, Total: len(ratios)}
+	for _, ratio := range ratios {
+		if tol == 0 || ratio == 0 {
+			row.F64++
+			continue
+		}
+		sym16 := QuantizeRatio(ratio, bits)
+		dequant16 := DequantizeRatio(sym16, bits)
+		if fastPath || math.Abs(dequant16/ratio-1.0) < tol {
+			row.U16++
+			continue
+		}
+		sym30 := QuantizeRatio(ratio, bits30)
+		dequant30 := DequantizeRatio(sym30, bits30)
+		if delta30 < tol || math.Abs(dequant30/ratio-1.0) < tol {
+			row.U32++
+		} else {
+			row.F64++
+		}
+	}
+	return row
+}

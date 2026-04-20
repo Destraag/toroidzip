@@ -180,8 +180,17 @@ func runEncode(args []string) error {
 
 func runAnalyze(args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
+	sigFigs := fs.Int("sig-figs", 0,
+		"show adaptive tier preview for this many significant figures (1-9)")
+	tolerance := fs.Float64("tolerance", 0.0,
+		"show adaptive tier preview at this relative tolerance (e.g. 1e-4)")
+	precBits := fs.Int("precision", 0,
+		"u16 precision bits for tier preview (default: derived from --sig-figs or recommended bits)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *sigFigs > 0 && *tolerance != 0 {
+		return fmt.Errorf("--sig-figs and --tolerance cannot both be set")
 	}
 	if fs.NArg() < 1 {
 		return fmt.Errorf("analyze requires <input.f64>")
@@ -193,7 +202,8 @@ func runAnalyze(args []string) error {
 
 	// Precision analysis: AnalyzePrecision expects ClassNormal ratios, not raw
 	// values. Extract them first using defaults (user hasn't chosen mode yet).
-	precRpt := codec.AnalyzePrecision(codec.ExtractNormalRatios(values, codec.DriftReanchor, codec.DefaultReanchorInterval))
+	ratios := codec.ExtractNormalRatios(values, codec.DriftReanchor, codec.DefaultReanchorInterval)
+	precRpt := codec.AnalyzePrecision(ratios)
 	fmt.Println("=== Precision Analysis ===")
 	fmt.Printf("  values      : %d\n", len(values))
 	fmt.Printf("  coverage    : %.2f%%\n", precRpt.Coverage*100)
@@ -237,6 +247,39 @@ func runAnalyze(args []string) error {
 		recommendedModeStr, driftRpt.RecommendedInterval)
 	fmt.Printf("  speed note  : mode A (Reanchor) encodes ~3x faster than mode B (Compensate)\n")
 	fmt.Printf("                at identical output size. Use A for throughput-sensitive workloads.\n")
+
+	// Adaptive tier preview — printed only when --tolerance or --sig-figs is given.
+	tol := *tolerance
+	bits := *precBits
+	if *sigFigs > 0 {
+		tol = codec.SigFigsToTolerance(*sigFigs)
+		if bits == 0 {
+			bits = codec.SigFigsToBits(*sigFigs)
+		}
+	}
+	if tol > 0 {
+		if bits == 0 {
+			bits = precRpt.RecommendedBits
+		}
+		if bits > 16 {
+			bits = 16
+		}
+		row := codec.AnalyzeTiers(ratios, bits, tol)
+		fmt.Println("\n=== Adaptive Tier Preview ===")
+		fmt.Printf("  epsilon     : %.2e\n", tol)
+		fmt.Printf("  u16 bits    : %d\n", bits)
+		fmt.Printf("  normal ratios: %d\n", row.Total)
+		if row.Total > 0 {
+			pU16 := float64(row.U16) / float64(row.Total) * 100
+			pU32 := float64(row.U32) / float64(row.Total) * 100
+			pF64 := float64(row.F64) / float64(row.Total) * 100
+			fmt.Printf("  u16  (2 B)  : %6d  (%5.1f%%)\n", row.U16, pU16)
+			fmt.Printf("  u32  (4 B)  : %6d  (%5.1f%%)\n", row.U32, pU32)
+			fmt.Printf("  f64  (8 B)  : %6d  (%5.1f%%)\n", row.F64, pF64)
+			fmt.Printf("  eff bytes/ratio: %.2f  (lossless=8.00)\n", row.EffectiveBytesPerRatio())
+		}
+	}
+
 	return nil
 }
 
@@ -292,7 +335,7 @@ func usage() {
 Usage:
   toroidzip encode  [flags] <input.f64> <output.tzrz>
   toroidzip decode  <input.tzrz> <output.f64>
-  toroidzip analyze <input.f64>
+  toroidzip analyze [flags] <input.f64>
 
 Encode flags:
   --entropy-mode raw|lossless|quantized|adaptive
@@ -303,12 +346,18 @@ Encode flags:
                           C = quantize: ratios rounded to float32
   --reanchor-interval N   verbatim anchor every N values (default 256)
   --sig-figs N            significant figures 1-9; implies quantized (or sets
-                          adaptive precision, capped at 16 bits)
+                          adaptive precision + tolerance together)
   --precision B           precision bits; 1-30 for quantized, 1-16 for adaptive
   --tolerance T           max relative quantisation error for adaptive mode
                           (0 = lossless-equivalent; e.g. 1e-4 for ~4 sig figs)
                           only valid with --entropy-mode adaptive
   --auto                  auto-select parameters from data analysis
   --lossy                 with --auto: use adaptive encoding at recommended
-                          precision and tolerance 1e-4`)
+                          precision and tolerance 1e-4
+
+Analyze flags:
+  --sig-figs N            show adaptive tier preview for N significant figures
+  --tolerance T           show adaptive tier preview at tolerance T
+  --precision B           u16 precision bits for tier preview (default: derived
+                          from --sig-figs or recommended bits)`)
 }

@@ -268,13 +268,13 @@ Tasks:
           --sig-figs + adaptive: hard cap removed; tol auto-wired from sig-figs
           4 new v5 tests: LowTolerance, SigFigsWiring, TiersUsed, BackwardCompatV4;
           121/121 passing
-- [ ] 7d: bench_m4.sh --adaptive updated to exercise v5 path;
+- [x] 7d: AnalyzeTiers + TierRow added to analyze.go; runAnalyze extended with
+          --tolerance/--sig-figs/--precision flags; Tier Preview section printed
+          when ε is given; usage string updated; 6 new tests; 127/127 passing
+- [ ] 7e: bench_m4.sh --adaptive updated to exercise v5 path;
           harness extended with tight-tolerance (ε=1e-6) row to show u32 tier benefit;
           results recorded here
-- [ ] 7e: README/PLAN/ROADMAP updated; all tests passing; M7 closed
-- [ ] 7f: analyze subcommand: show per-tier symbol breakdown at requested ε
-          e.g. "at ε=1e-4: ~92% u16, ~6% u32, ~2% float64" so user can
-          preview compression potential before encoding
+- [ ] 7f: README/PLAN/ROADMAP updated; all tests passing; M7 closed
 
 Note: v4 stream (ClassNormal=5 alphabet) remains decodeable — Decode dispatches
 on the version byte. No existing encoded files are broken.
