@@ -263,10 +263,16 @@ Tasks:
 - [ ] 7c: v5 stream constant; gatherRans7 with tiered fallback logic;
           encodeAdaptive dispatches to gatherRans7 + writeRansBody7;
           decodeV5 added; Decode dispatches on version byte
+          Bug fix: --sig-figs + adaptive currently ignores sig figs for ε;
+          SigFigsToTolerance added; hard cap bits>16 removed; both
+          precisionBits and tol derived from --sig-figs in adaptive mode
 - [ ] 7d: bench_m4.sh --adaptive updated to exercise v5 path;
           harness extended with tight-tolerance (ε=1e-6) row to show u32 tier benefit;
           results recorded here
 - [ ] 7e: README/PLAN/ROADMAP updated; all tests passing; M7 closed
+- [ ] 7f: analyze subcommand: show per-tier symbol breakdown at requested ε
+          e.g. "at ε=1e-4: ~92% u16, ~6% u32, ~2% float64" so user can
+          preview compression potential before encoding
 
 Note: v4 stream (ClassNormal=5 alphabet) remains decodeable — Decode dispatches
 on the version byte. No existing encoded files are broken.
