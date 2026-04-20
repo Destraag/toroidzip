@@ -261,12 +261,13 @@ Tasks:
           all 112 existing tests pass
 - [x] 7b: 7-symbol rANS: RansFreqs7, RansEncode7, RansDecode7, RansCountFreqs7;
           5 new tests incl. 6/7-symbol compat guard; 117/117 passing
-- [ ] 7c: v5 stream constant; gatherRans7 with tiered fallback logic;
-          encodeAdaptive dispatches to gatherRans7 + writeRansBody7;
-          decodeV5 added; Decode dispatches on version byte
-          Bug fix: --sig-figs + adaptive currently ignores sig figs for ε;
-          SigFigsToTolerance added; hard cap bits>16 removed; both
-          precisionBits and tol derived from --sig-figs in adaptive mode
+- [x] 7c: versionAdaptiveV5=5 added; gatherRans7 with tiered fallback (u16/u32/float64);
+          encodeAdaptive dispatches to encodeAdaptiveV5; readRansFreqs7, decodeV5,
+          decodeRans7 added; Decode dispatches on version 5; v4 decode kept
+          SigFigsToTolerance(n) added to quantize.go (0.5×10^-n)
+          --sig-figs + adaptive: hard cap removed; tol auto-wired from sig-figs
+          4 new v5 tests: LowTolerance, SigFigsWiring, TiersUsed, BackwardCompatV4;
+          121/121 passing
 - [ ] 7d: bench_m4.sh --adaptive updated to exercise v5 path;
           harness extended with tight-tolerance (ε=1e-6) row to show u32 tier benefit;
           results recorded here

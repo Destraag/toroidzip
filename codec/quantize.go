@@ -215,6 +215,20 @@ func SigFigsToBits(n int) int {
 	return b
 }
 
+// SigFigsToTolerance returns the per-ratio ε tolerance corresponding to N
+// significant figures: ε = 0.5 × 10^(−N). This is the maximum relative error
+// that still rounds to the correct Nth significant figure.
+// n is clamped to [1, 9].
+func SigFigsToTolerance(n int) float64 {
+	if n < 1 {
+		n = 1
+	}
+	if n > 9 {
+		n = 9
+	}
+	return 0.5 * math.Pow(10, float64(-n))
+}
+
 // BitsToSigFigs returns the number of significant figures guaranteed by B bits
 // of log-space quantisation. This is the floor of −log₁₀(ε_max/5), where
 // ε_max = 2^(QuantMaxLog2R/2^(B−1)) − 1.

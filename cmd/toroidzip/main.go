@@ -118,8 +118,11 @@ func runEncode(args []string) error {
 	if *sigFigs > 0 {
 		if entropyMode == codec.EntropyAdaptive {
 			precisionBits = codec.SigFigsToBits(*sigFigs)
-			if precisionBits > 16 {
-				precisionBits = 16 // adaptive always uses uint16 symbols
+			// Wire tolerance from sig-figs so the tiered encoder selects the right tier.
+			// User may still override with an explicit --tolerance flag.
+			if *tolerance == 0 {
+				tol := codec.SigFigsToTolerance(*sigFigs)
+				*tolerance = tol
 			}
 		} else {
 			entropyMode = codec.EntropyQuantized
