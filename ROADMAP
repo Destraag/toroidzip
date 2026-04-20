@@ -289,7 +289,10 @@ Tasks:
   lossless at 3× the throughput. ε=1e-4 collapses to u16 fast-path (same ratio
   as Q-3sf). Enc MB/s at ε=1e-6 is ~31 (per-ratio u32 checks); ε=1e-4 is ~58
   (fast-path skips all checks).
-- [ ] 7f: README/PLAN/ROADMAP updated; all tests passing; M7 closed
+- [x] 7f: README updated: status, adaptive v5, tier preview, flags, AnalyzeTiers;
+          PLAN/ROADMAP closed; 127/127 passing
+
+  M7 COMPLETE — HEAD c66bb04 → (7f commit)
 
 Note: v4 stream (ClassNormal=5 alphabet) remains decodeable — Decode dispatches
 on the version byte. No existing encoded files are broken.

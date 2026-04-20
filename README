@@ -13,9 +13,9 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 6 complete — tuning, benchmarking, and code review done;
-Milestone 7 in progress — tiered adaptive fallback (v5 stream, ClassNormal32)
-adding u32 middle tier between uint16 and float64 fallback paths.
+Status: Milestone 7 complete — tiered adaptive fallback (v5 stream, ClassNormal32);
+u32 middle tier between uint16 and float64 fully shipped and benchmarked.
+Milestone 8 next — formalization, algorithm writeup, white paper.
 
 Usage
 -----
@@ -32,10 +32,14 @@ Usage
   # Auto-select entropy mode from data
   toroidzip encode --auto input.f64 output.tzrz
 
-  # Analyze data before encoding (precision, drift, lossless viability)
+  # Analyze data before encoding (precision, drift, lossless viability, tier preview)
   toroidzip analyze input.f64
   # Output includes: recommended precision (tier-ceiling bumped), identity
   # fraction with lossless viability warning, drift mode speed tradeoff note.
+
+  # Adaptive tier preview — show % u16 / u32 / float64 at a given tolerance
+  toroidzip analyze --tolerance 1e-6 input.f64
+  toroidzip analyze --sig-figs 6 input.f64
 
 Input/output: raw IEEE 754 little-endian float64 binary files.
 
@@ -46,21 +50,30 @@ Flags (encode)
       raw:       no entropy coding (stream v1, baseline)
       lossless:  rANS-coded ratio stream (stream v2, default)
       quantized: lossy N-bit log-space quantization (stream v3)
-      adaptive:  per-ratio hybrid — quantize when error < ε, else exact (stream v4)
+      adaptive:  per-ratio tiered hybrid — u16 / u32 / float64 (stream v5)
+                 tier chosen per ratio so ε is satisfied with minimum bytes
 
-  --tolerance T          max relative error per ratio (adaptive mode only; default 1e-4)
+  --tolerance T          max relative error per ratio (adaptive mode only)
   --sig-figs N           significant decimal figures to retain (1–9); implies quantized
-  --precision N          precision bits (1–30) for quantized mode
+                         when used with --entropy-mode adaptive: sets both bits and ε
+  --precision N          precision bits for quantized (1–30) or adaptive u16 tier (1–16)
   --auto                 auto-select entropy mode by analyzing the input
   --lossy                shorthand for --entropy-mode quantized
   --drift-mode A|B       A = periodic reanchor (default), B = Kahan compensate
   --reanchor-interval N  values between verbatim anchors (default 256)
 
+Flags (analyze)
+---------------
+
+  --tolerance T    show adaptive tier preview at this ε
+  --sig-figs N     show adaptive tier preview for N sig figs
+  --precision N    u16 precision bits for tier preview (default: recommended bits)
+
 Structure
 ---------
 
   codec/          encode/decode logic, boundary classification, rANS, quantization
-  codec/analyze.go  AnalyzeDrift, AnalyzePrecision, ExtractNormalRatios
+  codec/analyze.go  AnalyzeDrift, AnalyzePrecision, ExtractNormalRatios, AnalyzeTiers
   cmd/toroidzip/  CLI binary (encode, decode, analyze subcommands)
   scripts/        bench_m4.sh — external baseline benchmark vs zstd/brotli/fpzip
                     usage: ./scripts/bench_m4.sh [--n N] [--effort fast|best|both]
