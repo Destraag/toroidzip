@@ -2,12 +2,195 @@ package codec_test
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"math/rand"
 	"testing"
 
 	"github.com/Destraag/toroidzip/codec"
 )
+
+// TestAdaptiveReanchorTriggered verifies that with AdaptiveReanchor enabled,
+// an adversarial (monotone) sequence that would accumulate error far beyond
+// the end-to-end guarantee with fixed K=256 is instead kept within T_end.
+//
+// The adversarial sequence multiplies by a fixed ratio each step so all
+// per-ratio quantization errors have the same sign — worst-case drift.
+// With K=256 and per-ratio ε≈1e-5 the worst-case error would be ~2.5e-3,
+// violating a 4-sig-fig guarantee (T_end=5e-4).  Adaptive reanchoring must
+// fire before the error crosses T_end.
+func TestAdaptiveReanchorTriggered(t *testing.T) {
+	const n = 500
+	const sigFigs = 4
+	endToEndTol := codec.SigFigsToTolerance(sigFigs)  // 5e-4
+	perRatioTol := codec.SigFigsToTolerance(sigFigs + 2) // 5e-6
+
+	// Adversarial: constant monotone growth — every quantization error has
+	// same sign, giving maximum drift accumulation.
+	values := make([]float64, n)
+	v := 100.0
+	for i := range values {
+		v *= 1.0001
+		values[i] = v
+	}
+
+	// Baseline: fixed K=256, no adaptive reanchor.
+	// Show that it violates the end-to-end guarantee.
+	optsFixed := codec.EncodeOptions{
+		EntropyMode:      codec.EntropyAdaptive,
+		PrecisionBits:    codec.SigFigsToBits(sigFigs + 2),
+		Tolerance:        perRatioTol,
+		ReanchorInterval: 256,
+		AdaptiveReanchor: false,
+	}
+	gotFixed := roundTrip(t, values, optsFixed)
+	var maxFixedErr float64
+	for i, want := range values {
+		if want != 0 {
+			if e := math.Abs(gotFixed[i]-want) / math.Abs(want); e > maxFixedErr {
+				maxFixedErr = e
+			}
+		}
+	}
+	if maxFixedErr <= endToEndTol {
+		// If the fixed encoder accidentally meets the guarantee, the adversarial
+		// sequence wasn't adversarial enough — warn but don't fail the test.
+		t.Logf("note: fixed K=256 unexpectedly met T_end (maxErr=%e <= %e); "+
+			"adversarial effect may be weaker than expected", maxFixedErr, endToEndTol)
+	}
+
+	// Adaptive: must meet the end-to-end guarantee.
+	optsAdaptive := codec.EncodeOptions{
+		EntropyMode:       codec.EntropyAdaptive,
+		PrecisionBits:     codec.SigFigsToBits(sigFigs + 2),
+		Tolerance:         perRatioTol,
+		ReanchorInterval:  codec.SigFigsToMaxK(sigFigs),
+		AdaptiveReanchor:  true,
+		EndToEndTolerance: endToEndTol,
+	}
+	gotAdaptive := roundTrip(t, values, optsAdaptive)
+	for i, want := range values {
+		if want == 0 {
+			continue
+		}
+		if e := math.Abs(gotAdaptive[i]-want) / math.Abs(want); e > endToEndTol {
+			t.Errorf("[%d] adaptive reanchor violated T_end: got %v want %v (rel err %e, T_end %e)",
+				i, gotAdaptive[i], want, e, endToEndTol)
+		}
+	}
+}
+
+// TestAdaptiveReanchorSparse verifies that near-constant data does not trigger
+// excessive adaptive reanchors.  Compression should be at least as good with
+// adaptive reanchoring as with the fixed-K safety cap alone, because smooth
+// data rarely accumulates enough error to cross T_end.
+func TestAdaptiveReanchorSparse(t *testing.T) {
+	const n = 10_000
+	const sigFigs = 4
+	endToEndTol := codec.SigFigsToTolerance(sigFigs)
+	perRatioTol := codec.SigFigsToTolerance(sigFigs + 2)
+	kMax := codec.SigFigsToMaxK(sigFigs) // 100
+
+	// Near-constant data with very small random perturbations.
+	rng := rand.New(rand.NewSource(42))
+	values := make([]float64, n)
+	v := 50.0
+	for i := range values {
+		v *= 1.0 + (rng.Float64()-0.5)*1e-5
+		values[i] = v
+	}
+
+	// Fixed K=kMax (no adaptive check): upper bound on reanchor count.
+	optsFixed := codec.EncodeOptions{
+		EntropyMode:      codec.EntropyAdaptive,
+		PrecisionBits:    codec.SigFigsToBits(sigFigs + 2),
+		Tolerance:        perRatioTol,
+		ReanchorInterval: kMax,
+		AdaptiveReanchor: false,
+	}
+	var bufFixed bytes.Buffer
+	if err := codec.Encode(values, &bufFixed, optsFixed); err != nil {
+		t.Fatalf("encode fixed: %v", err)
+	}
+
+	// Adaptive reanchoring: should fire fewer or equal reanchors on smooth data.
+	optsAdaptive := codec.EncodeOptions{
+		EntropyMode:       codec.EntropyAdaptive,
+		PrecisionBits:     codec.SigFigsToBits(sigFigs + 2),
+		Tolerance:         perRatioTol,
+		ReanchorInterval:  kMax,
+		AdaptiveReanchor:  true,
+		EndToEndTolerance: endToEndTol,
+	}
+	var bufAdaptive bytes.Buffer
+	if err := codec.Encode(values, &bufAdaptive, optsAdaptive); err != nil {
+		t.Fatalf("encode adaptive: %v", err)
+	}
+
+	// Adaptive output must not be larger than fixed (fewer or equal reanchors).
+	if bufAdaptive.Len() > bufFixed.Len() {
+		t.Errorf("adaptive output (%d bytes) larger than fixed K=%d output (%d bytes): "+
+			"unexpected extra reanchors on near-constant data",
+			bufAdaptive.Len(), kMax, bufFixed.Len())
+	}
+
+	// Verify the adaptive output still decodes correctly within T_end.
+	got, err := codec.Decode(&bufAdaptive)
+	if err != nil {
+		t.Fatalf("decode adaptive: %v", err)
+	}
+	for i, want := range values {
+		if want == 0 {
+			continue
+		}
+		if e := math.Abs(got[i]-want) / math.Abs(want); e > endToEndTol {
+			t.Errorf("[%d] rel err %e > T_end %e", i, e, endToEndTol)
+		}
+	}
+}
+
+// TestSigFigsEndToEndGuarantee verifies that --sig-figs N parameters (when
+// applied via EncodeOptions) guarantee N significant decimal figures in every
+// reconstructed value for N = 3, 4, 5, 6.
+//
+// The test uses a 10,000-value smooth sequence.  Each value is checked against
+// the corresponding original; the maximum relative error must not exceed
+// T_end = 0.5×10^-N at any position.
+func TestSigFigsEndToEndGuarantee(t *testing.T) {
+	const n = 10_000
+	rng := rand.New(rand.NewSource(7))
+	values := make([]float64, n)
+	v := 1.0
+	for i := range values {
+		v *= 1.0 + (rng.Float64()-0.5)*0.002
+		values[i] = v
+	}
+
+	for _, sigFigs := range []int{3, 4, 5, 6} {
+		sigFigs := sigFigs
+		t.Run(fmt.Sprintf("N=%d", sigFigs), func(t *testing.T) {
+			endToEndTol := codec.SigFigsToTolerance(sigFigs)
+			opts := codec.EncodeOptions{
+				EntropyMode:       codec.EntropyAdaptive,
+				PrecisionBits:     codec.SigFigsToBits(sigFigs + 2),
+				Tolerance:         codec.SigFigsToTolerance(sigFigs + 2),
+				ReanchorInterval:  codec.SigFigsToMaxK(sigFigs),
+				AdaptiveReanchor:  true,
+				EndToEndTolerance: endToEndTol,
+			}
+			got := roundTrip(t, values, opts)
+			for i, want := range values {
+				if want == 0 {
+					continue
+				}
+				if e := math.Abs(got[i]-want) / math.Abs(want); e > endToEndTol {
+					t.Errorf("[%d] N=%d: rel err %e > T_end %e (got %v want %v)",
+						i, sigFigs, e, endToEndTol, got[i], want)
+				}
+			}
+		})
+	}
+}
 
 // TestDecodeV4Legacy verifies that the legacy v4 adaptive stream decoder
 // (decodeV4 / decodeRans6) can still decode streams produced by old encoder

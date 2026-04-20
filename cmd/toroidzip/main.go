@@ -47,25 +47,40 @@ func main() {
 
 func runEncode(args []string) error {
 	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
-	reanchorInterval := fs.Int("reanchor-interval", codec.DefaultReanchorInterval,
-		"write a verbatim anchor every N values (default 256)")
+	reanchorInterval := fs.Int("reanchor-interval", 0,
+		"safety cap on verbatim anchor cadence; 0 = derive from --sig-figs or use default (256)")
 	driftModeStr := fs.String("drift-mode", "A",
 		"error-management strategy: A=reanchor (default), B=compensate, C=quantize")
 	entropyModeStr := fs.String("entropy-mode", "lossless",
 		"entropy mode: raw, lossless (default), quantized, or adaptive")
 	sigFigs := fs.Int("sig-figs", 0,
-		"significant figures to preserve (1-9); implies --entropy-mode quantized")
+		"guarantee N significant figures end-to-end in reconstructed values (1-9);\n"+
+			"\timplies --entropy-mode adaptive with adaptive reanchoring")
+	fs.IntVar(sigFigs, "n", 0, "shorthand for --sig-figs")
 	precBits := fs.Int("precision", 0,
 		"precision bits (1-16 for adaptive, 1-30 for quantized); cannot combine with --sig-figs")
 	tolerance := fs.Float64("tolerance", 0.0,
 		"max relative quantization error for adaptive mode (0=lossless-equivalent, e.g. 1e-4)")
 	auto := fs.Bool("auto", false,
 		"auto-select encoding parameters from data analysis")
+	fs.BoolVar(auto, "a", false, "shorthand for --auto")
 	lossy := fs.Bool("lossy", false,
 		"with --auto: use adaptive encoding at recommended precision and tolerance 1e-4")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// Track which flags were explicitly set so derived defaults don't clobber them.
+	reanchorExplicit := false
+	entropyExplicit := false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "reanchor-interval":
+			reanchorExplicit = true
+		case "entropy-mode":
+			entropyExplicit = true
+		}
+	})
 
 	// Validation.
 	if *lossy && !*auto {
@@ -74,7 +89,13 @@ func runEncode(args []string) error {
 	if *sigFigs > 0 && *precBits > 0 {
 		return fmt.Errorf("--sig-figs and --precision cannot both be set")
 	}
-	if *tolerance != 0 && strings.ToLower(*entropyModeStr) != "adaptive" {
+	if *sigFigs > 0 && *auto {
+		return fmt.Errorf("--sig-figs and --auto cannot both be set")
+	}
+	if *sigFigs > 0 && entropyExplicit && strings.ToLower(*entropyModeStr) != "adaptive" {
+		return fmt.Errorf("--sig-figs forces --entropy-mode adaptive; remove --entropy-mode or set it to adaptive")
+	}
+	if *tolerance != 0 && strings.ToLower(*entropyModeStr) != "adaptive" && *sigFigs == 0 {
 		return fmt.Errorf("--tolerance only applies to --entropy-mode adaptive")
 	}
 
@@ -113,20 +134,27 @@ func runEncode(args []string) error {
 		return fmt.Errorf("--entropy-mode must be raw, lossless, quantized, or adaptive (got %q)", *entropyModeStr)
 	}
 
-	// --sig-figs / --precision imply quantized mode (or set precision for adaptive).
+	// Apply default reanchor interval now that we know it wasn't explicitly set.
+	if *reanchorInterval <= 0 && !reanchorExplicit {
+		*reanchorInterval = codec.DefaultReanchorInterval
+	}
+
+	// --sig-figs N: end-to-end reconstruction guarantee.
+	// Forces adaptive mode, sets per-ratio ε 100× tighter than T_end,
+	// enables adaptive reanchoring, and caps reanchor interval at K_max=100.
+	var endToEndTolerance float64
+	adaptiveReanchor := false
 	precisionBits := 0
 	if *sigFigs > 0 {
-		if entropyMode == codec.EntropyAdaptive {
-			precisionBits = codec.SigFigsToBits(*sigFigs)
-			// Wire tolerance from sig-figs so the tiered encoder selects the right tier.
-			// User may still override with an explicit --tolerance flag.
-			if *tolerance == 0 {
-				tol := codec.SigFigsToTolerance(*sigFigs)
-				*tolerance = tol
-			}
-		} else {
-			entropyMode = codec.EntropyQuantized
-			precisionBits = codec.SigFigsToBits(*sigFigs)
+		entropyMode = codec.EntropyAdaptive
+		precisionBits = codec.SigFigsToBits(*sigFigs + 2) // tighter per-ratio precision
+		if *tolerance == 0 {
+			*tolerance = codec.SigFigsToTolerance(*sigFigs + 2) // per-ratio ε
+		}
+		endToEndTolerance = codec.SigFigsToTolerance(*sigFigs) // T_end guarantee
+		adaptiveReanchor = true
+		if !reanchorExplicit {
+			*reanchorInterval = codec.SigFigsToMaxK(*sigFigs) // safety cap = 100
 		}
 	} else if *precBits > 0 {
 		if entropyMode != codec.EntropyAdaptive {
@@ -144,7 +172,9 @@ func runEncode(args []string) error {
 		intervals := []int{64, 128, 256, 512}
 		driftRpt := codec.AnalyzeDrift(values, intervals)
 		driftMode = driftRpt.RecommendedMode
-		*reanchorInterval = driftRpt.RecommendedInterval
+		if !reanchorExplicit && *sigFigs == 0 {
+			*reanchorInterval = driftRpt.RecommendedInterval
+		}
 		if *lossy {
 			precRpt := codec.AnalyzePrecision(codec.ExtractNormalRatios(values, driftMode, *reanchorInterval))
 			entropyMode = codec.EntropyAdaptive
@@ -169,11 +199,13 @@ func runEncode(args []string) error {
 	defer out.Close()
 
 	opts := codec.EncodeOptions{
-		ReanchorInterval: *reanchorInterval,
-		DriftMode:        driftMode,
-		EntropyMode:      entropyMode,
-		PrecisionBits:    precisionBits,
-		Tolerance:        *tolerance,
+		ReanchorInterval:  *reanchorInterval,
+		DriftMode:         driftMode,
+		EntropyMode:       entropyMode,
+		PrecisionBits:     precisionBits,
+		Tolerance:         *tolerance,
+		AdaptiveReanchor:  adaptiveReanchor,
+		EndToEndTolerance: endToEndTolerance,
 	}
 	if err := codec.Encode(values, out, opts); err != nil {
 		return fmt.Errorf("encoding: %w", err)
@@ -186,6 +218,7 @@ func runAnalyze(args []string) error {
 	fs := flag.NewFlagSet("analyze", flag.ContinueOnError)
 	sigFigs := fs.Int("sig-figs", 0,
 		"show adaptive tier preview for this many significant figures (1-9)")
+	fs.IntVar(sigFigs, "n", 0, "shorthand for --sig-figs")
 	tolerance := fs.Float64("tolerance", 0.0,
 		"show adaptive tier preview at this relative tolerance (e.g. 1e-4)")
 	precBits := fs.Int("precision", 0,
@@ -255,10 +288,15 @@ func runAnalyze(args []string) error {
 	// Adaptive tier preview — printed only when --tolerance or --sig-figs is given.
 	tol := *tolerance
 	bits := *precBits
+	var endToEndTol float64
 	if *sigFigs > 0 {
-		tol = codec.SigFigsToTolerance(*sigFigs)
+		// Use the same per-ratio ε the encoder uses: SigFigsToTolerance(N+2).
+		// The end-to-end guarantee (N sig figs) is enforced by adaptive reanchoring
+		// with K_max = SigFigsToMaxK(N) = 100.
+		tol = codec.SigFigsToTolerance(*sigFigs + 2)
+		endToEndTol = codec.SigFigsToTolerance(*sigFigs)
 		if bits == 0 {
-			bits = codec.SigFigsToBits(*sigFigs)
+			bits = codec.SigFigsToBits(*sigFigs + 2)
 		}
 	}
 	if tol > 0 {
@@ -270,7 +308,14 @@ func runAnalyze(args []string) error {
 		}
 		row := codec.AnalyzeTiers(ratios, bits, tol)
 		fmt.Println("\n=== Adaptive Tier Preview ===")
-		fmt.Printf("  epsilon     : %.2e\n", tol)
+		if endToEndTol > 0 {
+			fmt.Printf("  sig-figs guarantee : %d sig figs end-to-end (T_end = %.2e)\n",
+				*sigFigs, endToEndTol)
+			fmt.Printf("  per-ratio epsilon  : %.2e  (100× tighter; K_max = %d)\n",
+				tol, codec.SigFigsToMaxK(*sigFigs))
+		} else {
+			fmt.Printf("  epsilon     : %.2e\n", tol)
+		}
 		fmt.Printf("  u16 bits    : %d\n", bits)
 		fmt.Printf("  normal ratios: %d\n", row.Total)
 		if row.Total > 0 {

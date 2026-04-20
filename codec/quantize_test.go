@@ -267,7 +267,7 @@ func BenchmarkQuantizeRatio(b *testing.B) {
 	}
 }
 
-// TestSigFigsToToleranceBounds verifies clamping at n<1 and n>9.
+// TestSigFigsToToleranceBounds verifies clamping at n<1 and n>11.
 func TestSigFigsToToleranceBounds(t *testing.T) {
 	low := codec.SigFigsToTolerance(0)
 	if low != codec.SigFigsToTolerance(1) {
@@ -275,13 +275,35 @@ func TestSigFigsToToleranceBounds(t *testing.T) {
 			low, codec.SigFigsToTolerance(1))
 	}
 	high := codec.SigFigsToTolerance(99)
-	if high != codec.SigFigsToTolerance(9) {
-		t.Errorf("SigFigsToTolerance(99) = %g, want same as SigFigsToTolerance(9) = %g",
-			high, codec.SigFigsToTolerance(9))
+	if high != codec.SigFigsToTolerance(11) {
+		t.Errorf("SigFigsToTolerance(99) = %g, want same as SigFigsToTolerance(11) = %g",
+			high, codec.SigFigsToTolerance(11))
 	}
 	// Spot-check: n=4 → 0.5e-4
 	if got, want := codec.SigFigsToTolerance(4), 0.5e-4; math.Abs(got-want) > 1e-15 {
 		t.Errorf("SigFigsToTolerance(4) = %g, want %g", got, want)
+	}
+}
+
+// TestSigFigsToMaxK verifies that SigFigsToMaxK returns 100 for all valid N
+// and that the K×ε_per_ratio product does not exceed T_end for any N in [1,9].
+// A small floating-point tolerance is applied for boundary cases where
+// K×ε_per_ratio and T_end differ only in the last ULP.
+func TestSigFigsToMaxK(t *testing.T) {
+	for n := 1; n <= 9; n++ {
+		k := codec.SigFigsToMaxK(n)
+		if k != 100 {
+			t.Errorf("SigFigsToMaxK(%d) = %d, want 100", n, k)
+		}
+		// Verify worst-case bound: K × ε_per_ratio ≤ T_end.
+		// Allow a tiny rounding margin (1 ULP) for floating-point equality.
+		endToEnd := codec.SigFigsToTolerance(n)
+		perRatio := codec.SigFigsToTolerance(n + 2)
+		worstCase := float64(k) * perRatio
+		if worstCase > endToEnd*(1+1e-10) {
+			t.Errorf("N=%d: K(%d) × ε_per(%e) = %e > T_end(%e); guarantee violated",
+				n, k, perRatio, worstCase, endToEnd)
+		}
 	}
 }
 

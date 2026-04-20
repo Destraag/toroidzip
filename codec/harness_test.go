@@ -204,6 +204,26 @@ func TestM3Harness(t *testing.T) {
 			16,
 		})
 	}
+	// Adaptive sig-figs (v5, end-to-end guarantee): N sig figs end-to-end
+	// using adaptive reanchoring.  "G-Nsf" = guaranteed N sig figs.
+	// Per-ratio ε = SigFigsToTolerance(N+2); K_max = 100; T_end = SigFigsToTolerance(N).
+	for _, sf := range []int{4, 6} {
+		sf := sf
+		bits := codec.SigFigsToBits(sf + 2)
+		modes = append(modes, modeSpec{
+			fmt.Sprintf("G-%dsf/AdaptiveReanchor", sf),
+			codec.EncodeOptions{
+				EntropyMode:       codec.EntropyAdaptive,
+				PrecisionBits:     bits,
+				Tolerance:         codec.SigFigsToTolerance(sf + 2),
+				ReanchorInterval:  codec.SigFigsToMaxK(sf),
+				AdaptiveReanchor:  true,
+				EndToEndTolerance: codec.SigFigsToTolerance(sf),
+				DriftMode:         codec.DriftReanchor,
+			},
+			bits,
+		})
+	}
 
 	// Collect results.
 	type row struct {

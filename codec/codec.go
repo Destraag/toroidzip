@@ -51,6 +51,18 @@ type EncodeOptions struct {
 	// Tolerance = 0 (default): all normals take the exact path — lossless-equivalent.
 	// Tolerance = math.MaxFloat64: all normals are quantised — matches v3 at bits≤16.
 	Tolerance float64
+
+	// AdaptiveReanchor enables drift-triggered reanchoring. When true, the encoder
+	// emits a ClassReanchor whenever the reconstructed value would exceed
+	// EndToEndTolerance, independently of ReanchorInterval position.
+	// ReanchorInterval becomes a safety cap: reanchors still fire at fixed
+	// intervals as a fallback. Primarily set by --sig-figs in CLI mode.
+	AdaptiveReanchor bool
+
+	// EndToEndTolerance is the maximum acceptable relative reconstruction error
+	// for any single output value when AdaptiveReanchor is true. When zero,
+	// end-to-end tolerance is not enforced (per-ratio Tolerance still applies).
+	EndToEndTolerance float64
 }
 
 // Magic bytes identifying a ToroidZip stream.
@@ -92,6 +104,8 @@ func Encode(values []float64, w io.Writer, opts EncodeOptions) error {
 // Body: anchor float64, then per-value: class_byte(1) + float64(8).
 func encodeRaw(values []float64, w io.Writer, opts EncodeOptions) error {
 	ri, dm := opts.ReanchorInterval, opts.DriftMode
+	adaptiveReanchor := opts.AdaptiveReanchor && opts.EndToEndTolerance > 0
+	endToEndTol := opts.EndToEndTolerance
 	if _, err := w.Write(magic[:]); err != nil {
 		return err
 	}
@@ -142,6 +156,32 @@ func encodeRaw(values []float64, w io.Writer, opts EncodeOptions) error {
 			class = Classify(ratio)
 		}
 
+		// Adaptive reanchor: if the reconstructed value would exceed T_end, emit
+		// a verbatim ClassReanchor instead. For Mode A (DriftReanchor), prev is
+		// the original value so per-step error is negligible; this fires mainly
+		// under Mode C (DriftQuantize) where prev tracks the decoder's accumulation.
+		if adaptiveReanchor && !IsBoundary(class) && class != ClassReanchor && values[i] != 0 {
+			var decodedNext float64
+			if class == ClassIdentity {
+				decodedNext = prev
+			} else {
+				decodedNext = prev * ratio
+			}
+			if math.Abs(decodedNext-values[i])/math.Abs(values[i]) > endToEndTol {
+				if err := writeByte(w, byte(ClassReanchor)); err != nil {
+					return err
+				}
+				if err := writeFloat64(w, values[i]); err != nil {
+					return err
+				}
+				prev = values[i]
+				if dm == DriftCompensate {
+					kp = newKahanProd(prev)
+				}
+				continue
+			}
+		}
+
 		if err := writeByte(w, byte(class)); err != nil {
 			return err
 		}
@@ -176,12 +216,20 @@ func encodeRaw(values []float64, w io.Writer, opts EncodeOptions) error {
 //	ClassNormal (quantized):  1/2/4 bytes uint8/uint16/uint32 LE (log-space symbol)
 //	                          tier = QuantPayloadTier(bits): 1→bits 1–8, 2→bits 9–16, 4→bits 17–30
 //	ClassBoundary*/Reanchor:  8 bytes float64 (verbatim current value)
+//
+// When opts.AdaptiveReanchor is true and opts.EntropyMode is EntropyQuantized,
+// a ClassReanchor is emitted whenever the dequantized reconstruction would
+// exceed opts.EndToEndTolerance.
 func gatherRans(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
 	ri, dm := opts.ReanchorInterval, opts.DriftMode
 	bits := opts.PrecisionBits
 	if bits <= 0 {
 		bits = DefaultPrecisionBits
 	}
+
+	adaptiveReanchor := opts.AdaptiveReanchor && opts.EndToEndTolerance > 0 &&
+		opts.EntropyMode == EntropyQuantized
+	endToEndTol := opts.EndToEndTolerance
 
 	payloads = make([]byte, 0, len(values)*4)
 	payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[0]))
@@ -209,6 +257,22 @@ func gatherRans(values []float64, opts EncodeOptions) (classes []byte, payloads 
 		if dm == DriftQuantize && (class == ClassNormal || class == ClassIdentity) {
 			ratio = float64(float32(ratio))
 			class = Classify(ratio)
+		}
+
+		// Adaptive reanchor pre-check for quantized ClassNormal: if the dequantized
+		// reconstruction would exceed T_end, emit ClassReanchor instead.
+		if adaptiveReanchor && class == ClassNormal && values[i] != 0 {
+			sym := QuantizeRatio(ratio, bits)
+			dequant := DequantizeRatio(sym, bits)
+			if math.Abs(prev*dequant-values[i])/math.Abs(values[i]) > endToEndTol {
+				classes = append(classes, byte(ClassReanchor))
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+				prev = values[i]
+				if dm == DriftCompensate {
+					kp = newKahanProd(prev)
+				}
+				continue
+			}
 		}
 
 		classes = append(classes, byte(class))
@@ -596,6 +660,10 @@ func encodeAdaptive(values []float64, w io.Writer, opts EncodeOptions) error {
 //   - relErr >= tol at 30 bits: ClassNormalExact + float64 (8 bytes)
 //
 // ratio==0 always takes the exact path (cannot be represented by any symbol).
+//
+// When opts.AdaptiveReanchor is true, a ClassReanchor is emitted whenever the
+// quantized reconstruction of a value would exceed opts.EndToEndTolerance.
+// opts.ReanchorInterval remains a safety cap that also triggers reanchors.
 func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
 	ri, dm := opts.ReanchorInterval, opts.DriftMode
 	bits := opts.PrecisionBits
@@ -615,6 +683,9 @@ func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads
 	// fastPath: skip all per-ratio checks when every 16-bit quantization is
 	// guaranteed to satisfy ε analytically.
 	fastPath := tol > 0 && delta16 < tol
+
+	adaptiveReanchor := opts.AdaptiveReanchor && opts.EndToEndTolerance > 0
+	endToEndTol := opts.EndToEndTolerance
 
 	payloads = make([]byte, 0, len(values)*4)
 	payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[0]))
@@ -645,38 +716,67 @@ func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads
 
 		switch class {
 		case ClassIdentity:
+			// Decoder keeps prev unchanged; decoded value for this position is prev.
+			if adaptiveReanchor && values[i] != 0 &&
+				math.Abs(prev-values[i])/math.Abs(values[i]) > endToEndTol {
+				classes = append(classes, byte(ClassReanchor))
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+				prev = values[i]
+				if dm == DriftCompensate {
+					kp = newKahanProd(prev)
+				}
+				continue
+			}
 			classes = append(classes, byte(ClassIdentity))
 
 		case ClassNormal:
+			// Phase 1: pick the smallest tier that satisfies the per-ratio ε.
 			sym16 := QuantizeRatio(ratio, bits)
 			dequant16 := DequantizeRatio(sym16, bits)
-
+			var sym30 uint32
 			var encodedRatio float64
+			var chosenClass RatioClass
 			if ratio == 0 {
-				// Zero cannot be quantized: exact fallback.
-				classes = append(classes, byte(ClassNormalExact))
-				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
 				encodedRatio = ratio
+				chosenClass = ClassNormalExact
 			} else if fastPath || math.Abs(dequant16/ratio-1.0) < tol {
-				// 16-bit path (fast or checked).
-				classes = append(classes, byte(ClassNormal))
-				payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym16))
 				encodedRatio = dequant16
+				chosenClass = ClassNormal
 			} else {
-				// 16-bit failed — try 30-bit.
-				sym30 := QuantizeRatio(ratio, bits30)
+				sym30 = QuantizeRatio(ratio, bits30)
 				dequant30 := DequantizeRatio(sym30, bits30)
 				if delta30 < tol || math.Abs(dequant30/ratio-1.0) < tol {
-					// 30-bit path.
-					classes = append(classes, byte(ClassNormal32))
-					payloads = binary.LittleEndian.AppendUint32(payloads, sym30)
 					encodedRatio = dequant30
+					chosenClass = ClassNormal32
 				} else {
-					// Exact fallback.
-					classes = append(classes, byte(ClassNormalExact))
-					payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
 					encodedRatio = ratio
+					chosenClass = ClassNormalExact
 				}
+			}
+
+			// Phase 2: adaptive end-to-end reanchor check.
+			// If the quantized reconstruction would exceed T_end, emit a verbatim
+			// ClassReanchor instead (resets accumulated drift to zero).
+			if adaptiveReanchor && values[i] != 0 &&
+				math.Abs(prev*encodedRatio-values[i])/math.Abs(values[i]) > endToEndTol {
+				classes = append(classes, byte(ClassReanchor))
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(values[i]))
+				prev = values[i]
+				if dm == DriftCompensate {
+					kp = newKahanProd(prev)
+				}
+				continue
+			}
+
+			// Phase 3: emit chosen tier.
+			classes = append(classes, byte(chosenClass))
+			switch chosenClass {
+			case ClassNormal:
+				payloads = binary.LittleEndian.AppendUint16(payloads, uint16(sym16))
+			case ClassNormal32:
+				payloads = binary.LittleEndian.AppendUint32(payloads, sym30)
+			case ClassNormalExact:
+				payloads = binary.LittleEndian.AppendUint64(payloads, math.Float64bits(ratio))
 			}
 			if dm == DriftCompensate {
 				prev = kp.multiply(encodedRatio)

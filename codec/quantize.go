@@ -218,15 +218,29 @@ func SigFigsToBits(n int) int {
 // SigFigsToTolerance returns the per-ratio ε tolerance corresponding to N
 // significant figures: ε = 0.5 × 10^(−N). This is the maximum relative error
 // that still rounds to the correct Nth significant figure.
-// n is clamped to [1, 9].
+// n is clamped below to 1. The upper clamp is 11 (rather than 9) so that
+// callers computing end-to-end guarantees can pass N+2 for N up to 9.
 func SigFigsToTolerance(n int) float64 {
 	if n < 1 {
 		n = 1
 	}
-	if n > 9 {
-		n = 9
+	if n > 11 {
+		n = 11
 	}
 	return 0.5 * math.Pow(10, float64(-n))
+}
+
+// SigFigsToMaxK returns the maximum reanchor interval cap that guarantees
+// end-to-end N-significant-figure reconstruction even in the adversarial
+// (same-sign drift) case, when per-ratio tolerance is SigFigsToTolerance(N+2).
+//
+// Derivation: K_max × ε_per_ratio ≤ T_end
+//
+//	= SigFigsToTolerance(N) / SigFigsToTolerance(N+2) = 10² = 100 (N-independent).
+//
+// n is accepted for documentation clarity; the return value is always 100.
+func SigFigsToMaxK(_ int) int {
+	return 100
 }
 
 // BitsToSigFigs returns the number of significant figures guaranteed by B bits

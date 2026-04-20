@@ -238,13 +238,17 @@ func (r TierRow) EffectiveBytesPerRatio() float64 {
 }
 
 // AnalyzeTiers counts how many of the supplied ClassNormal ratios land in each
-// payload tier for the given tolerance ε and u16 precision bits.  The
+// payload tier for the given per-ratio tolerance ε and u16 precision bits. The
 // classification mirrors gatherRans7 exactly:
 //
 //   - ratio == 0                        → F64 (cannot be quantized)
 //   - fastPath or relErr(u16) < ε       → U16
 //   - relErr(u32/30-bit) < ε            → U32
 //   - otherwise                         → F64
+//
+// tol is the per-ratio ε — the same value passed to EncodeOptions.Tolerance.
+// When --sig-figs N is used in the CLI, tol = SigFigsToTolerance(N+2) (100×
+// tighter than the end-to-end guarantee), not SigFigsToTolerance(N).
 //
 // bits is clamped to [1, 16]; it is the PrecisionBits setting passed to the
 // encoder.  tol must be > 0; if tol == 0 every ratio is classified as F64.

@@ -13,9 +13,9 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 7 complete — tiered adaptive fallback (v5 stream, ClassNormal32);
-u32 middle tier between uint16 and float64 fully shipped and benchmarked.
-Milestone 8 next — formalization, algorithm writeup, white paper.
+Status: Milestone 8 complete — test hardening, dead code cleanup, 87% coverage;
+Milestone 9 in progress — end-to-end significant-figure guarantee with adaptive
+drift-triggered reanchoring.
 
 Usage
 -----
@@ -26,20 +26,23 @@ Usage
   toroidzip encode input.f64 output.tzrz
   toroidzip decode input.tzrz output.f64
 
-  # Quantized (lossy) encode — 8 sig-fig precision
-  toroidzip encode --lossy --sig-figs 8 input.f64 output.tzrz
+  # Lossy encode with end-to-end 4 significant figure guarantee
+  toroidzip encode -n 4 input.f64 output.tzrz
+  toroidzip encode --sig-figs 4 input.f64 output.tzrz   # same
 
-  # Auto-select entropy mode from data
+  # Auto-select entropy mode from data (lossless if compressible, else advise)
   toroidzip encode --auto input.f64 output.tzrz
+  toroidzip encode -a input.f64 output.tzrz              # same
+
+  # Auto-select with lossy adaptive encoding
+  toroidzip encode -a --lossy input.f64 output.tzrz
 
   # Analyze data before encoding (precision, drift, lossless viability, tier preview)
   toroidzip analyze input.f64
-  # Output includes: recommended precision (tier-ceiling bumped), identity
-  # fraction with lossless viability warning, drift mode speed tradeoff note.
 
   # Adaptive tier preview — show % u16 / u32 / float64 at a given tolerance
+  toroidzip analyze -n 6 input.f64
   toroidzip analyze --tolerance 1e-6 input.f64
-  toroidzip analyze --sig-figs 6 input.f64
 
 Input/output: raw IEEE 754 little-endian float64 binary files.
 
@@ -53,21 +56,48 @@ Flags (encode)
       adaptive:  per-ratio tiered hybrid — u16 / u32 / float64 (stream v5)
                  tier chosen per ratio so ε is satisfied with minimum bytes
 
-  --tolerance T          max relative error per ratio (adaptive mode only)
-  --sig-figs N           significant decimal figures to retain (1–9); implies quantized
-                         when used with --entropy-mode adaptive: sets both bits and ε
-  --precision N          precision bits for quantized (1–30) or adaptive u16 tier (1–16)
-  --auto                 auto-select entropy mode by analyzing the input
-  --lossy                shorthand for --entropy-mode quantized
-  --drift-mode A|B       A = periodic reanchor (default), B = Kahan compensate
-  --reanchor-interval N  values between verbatim anchors (default 256)
+  --sig-figs N, -n N
+      Guarantee N significant decimal figures in reconstructed values, end-to-end.
+      This is the recommended lossy flag for most users.
+      Internally sets per-ratio ε = 0.5×10^-(N+2), enables adaptive reanchoring,
+      and caps reanchor interval at 100 as a worst-case safety bound.
+      Cannot be combined with --auto, --precision, or a non-adaptive --entropy-mode.
+      Power users may override the derived per-ratio ε with an explicit --tolerance.
+
+  --tolerance T
+      Max relative error per ratio in adaptive mode (e.g. 1e-4).
+      When set alongside --sig-figs, overrides the auto-derived per-ratio ε
+      (T_end guarantee is still enforced by adaptive reanchoring).
+      Cannot be used without --entropy-mode adaptive (except alongside --sig-figs).
+
+  --precision N
+      Precision bits for quantized (1–30) or adaptive u16 tier (1–16).
+      Cannot be combined with --sig-figs.
+
+  --auto, -a
+      Auto-select entropy mode by analyzing the input.
+      Cannot be combined with --sig-figs.
+
+  --lossy
+      With --auto: use adaptive encoding at recommended precision and ε=1e-4.
+      Requires --auto.
+
+  --drift-mode A|B|C
+      A = periodic reanchor, original values as anchors (default; fastest)
+      B = Kahan compensate; encoder tracks decoder's accumulated product exactly
+      C = quantize; encoder mirrors decoder's float32-rounded accumulation
+
+  --reanchor-interval N
+      Safety cap on verbatim anchor cadence (default 256; default 100 with --sig-figs).
+      Adaptive reanchoring may fire earlier when --sig-figs is active.
+      An explicit value here overrides the --sig-figs derived cap.
 
 Flags (analyze)
 ---------------
 
-  --tolerance T    show adaptive tier preview at this ε
-  --sig-figs N     show adaptive tier preview for N sig figs
-  --precision N    u16 precision bits for tier preview (default: recommended bits)
+  --sig-figs N, -n N   show adaptive tier preview for N sig figs
+  --tolerance T        show adaptive tier preview at this ε
+  --precision N        u16 precision bits for tier preview (default: recommended bits)
 
 Structure
 ---------
