@@ -2,3 +2,8 @@
 *.f64
 /bin/
 PLAN
+
+# Build artifacts and profiling output
+*.exe
+*.prof
+coverage.out
