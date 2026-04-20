@@ -203,7 +203,24 @@ improvements surfaced before formalizing.
     (delta = 2^(1/2^bits) - 1 for log-space quantization), making the
     per-ratio decision a single comparison with no Exp call.
     Estimated saving: ~40% of total encode time (eliminates one Exp+Pow per ratio).
-- [ ] 6c: Full code review — correctness, naming, edge cases, API clarity
+- [x] 6c: Full code review — correctness, naming, edge cases, API clarity
+
+  Bugs fixed:
+    1. runAnalyze passed raw values to AnalyzePrecision (expects ratios) —
+       fixed to use ExtractNormalRatios(values, DriftReanchor, DefaultReanchorInterval)
+       (identity fraction, coverage, recommended bits were all wrong before)
+    2. CLI --drift-mode default was B (Compensate) but README/ROADMAP/DefaultDriftMode
+       all say A; M3 shows B is 3.4x slower with identical output — fixed to A
+
+  Docs/comments fixed:
+    3. EntropyAdaptive comment: added Tolerance/PrecisionBits guidance (was truncated)
+    4. DefaultPrecisionBits comment: added explicit sig-fig note and tier guidance
+    5. ROADMAP CLI reference: added adaptive to --entropy-mode list
+    6. usage() drift-mode help: updated to show A as default with speed note
+
+  Noted (not changed):
+    7. DefaultPrecisionBits=8 (~2sf) is a footgun for bare EncodeOptions{};
+       comment improved but value unchanged (breaking change for library users)
 - [ ] 6d: External comparison (bench_m4.sh) with v4 adaptive included;
           does adaptive beat Q-3sf at bounded error?
 - [ ] 6e: Address improvements surfaced by 6b–6d (rANS tuning only if
@@ -225,7 +242,7 @@ improvements surfaced before formalizing.
     toroidzip decode <input.tzrz> <output.f64>
     toroidzip analyze <input.f64>
 
-    --entropy-mode raw|lossless|quantized  (default lossless)
+    --entropy-mode raw|lossless|quantized|adaptive  (default lossless)
     --sig-figs N       significant decimal figures 1–9 (implies quantized)
     --precision N      precision bits 1–30 (implies quantized)
     --auto             auto-select mode from data analysis

@@ -98,13 +98,18 @@ const (
 	//   - error < ε  → store as uint16 quantized symbol (ClassNormal)
 	//   - error ≥ ε  → store as float64 verbatim (ClassNormalExact)
 	// The class stream uses a 6-symbol rANS alphabet.
-	// At ε=0: output is bit-identical to EntropyLossless.
-	// At ε=∞: output matches EntropyQuantized.
+	// At ε=0 (default Tolerance): output is bit-identical to EntropyLossless.
+	// At ε=∞: output matches EntropyQuantized at bits≤16.
+	// Set EncodeOptions.Tolerance to control ε (e.g. 1e-4 ≈ 4 sig-fig loss bound).
+	// Set EncodeOptions.PrecisionBits for the quantized symbols (capped at 16).
 	EntropyAdaptive
 )
 
 // DefaultPrecisionBits is the quantisation depth used when
 // EncodeOptions.PrecisionBits is 0 and EntropyMode is EntropyQuantized.
+// 8 bits ≈ 2 significant figures (u8 payload tier, 1 byte/symbol).
+// Use AnalyzePrecision to select precision appropriate for the data, or
+// set PrecisionBits explicitly: 16 = u16 tier (~4 sf), 30 = u32 tier (~9 sf).
 const DefaultPrecisionBits = 8
 
 // Classify returns the RatioClass for a computed ratio value.

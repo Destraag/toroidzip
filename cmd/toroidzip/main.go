@@ -49,8 +49,8 @@ func runEncode(args []string) error {
 	fs := flag.NewFlagSet("encode", flag.ContinueOnError)
 	reanchorInterval := fs.Int("reanchor-interval", codec.DefaultReanchorInterval,
 		"write a verbatim anchor every N values (default 256)")
-	driftModeStr := fs.String("drift-mode", "B",
-		"error-management strategy: A=reanchor, B=compensate (default), C=quantize")
+	driftModeStr := fs.String("drift-mode", "A",
+		"error-management strategy: A=reanchor (default), B=compensate, C=quantize")
 	entropyModeStr := fs.String("entropy-mode", "lossless",
 		"entropy mode: raw, lossless (default), quantized, or adaptive")
 	sigFigs := fs.Int("sig-figs", 0,
@@ -188,8 +188,9 @@ func runAnalyze(args []string) error {
 		return fmt.Errorf("reading input: %w", err)
 	}
 
-	// Precision analysis (pass all values; AnalyzePrecision handles classification).
-	precRpt := codec.AnalyzePrecision(values)
+	// Precision analysis: AnalyzePrecision expects ClassNormal ratios, not raw
+	// values. Extract them first using defaults (user hasn't chosen mode yet).
+	precRpt := codec.AnalyzePrecision(codec.ExtractNormalRatios(values, codec.DriftReanchor, codec.DefaultReanchorInterval))
 	fmt.Println("=== Precision Analysis ===")
 	fmt.Printf("  values      : %d\n", len(values))
 	fmt.Printf("  coverage    : %.2f%%\n", precRpt.Coverage*100)
@@ -293,9 +294,9 @@ Usage:
 Encode flags:
   --entropy-mode raw|lossless|quantized|adaptive
                           entropy mode (default lossless)
-  --drift-mode A|B|C      error-management strategy (default B)
-                          A = reanchor: periodic verbatim anchors
-                          B = compensate: Kahan log-space (default)
+  --drift-mode A|B|C      error-management strategy (default A)
+                          A = reanchor: periodic verbatim anchors (default, ~3x faster)
+                          B = compensate: Kahan log-space (identical output to A)
                           C = quantize: ratios rounded to float32
   --reanchor-interval N   verbatim anchor every N values (default 256)
   --sig-figs N            significant figures 1-9; implies quantized (or sets
