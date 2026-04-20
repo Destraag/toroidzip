@@ -7,3 +7,6 @@ PLAN
 *.exe
 *.prof
 coverage.out
+
+# Benchmark temp data
+bench_data/
