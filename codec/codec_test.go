@@ -22,7 +22,7 @@ import (
 func TestAdaptiveReanchorTriggered(t *testing.T) {
 	const n = 500
 	const sigFigs = 4
-	endToEndTol := codec.SigFigsToTolerance(sigFigs)  // 5e-4
+	endToEndTol := codec.SigFigsToTolerance(sigFigs)     // 5e-4
 	perRatioTol := codec.SigFigsToTolerance(sigFigs + 2) // 5e-6
 
 	// Adversarial: constant monotone growth — every quantization error has
