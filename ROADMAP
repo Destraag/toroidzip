@@ -316,20 +316,48 @@ on the version byte. No existing encoded files are broken.
 
   M8 COMPLETE — HEAD 1d12336
 
-### Milestone 9 — Formalization
+### Milestone 9 — End-to-End Sig-Figs Guarantee + Adaptive Reanchoring ✓ COMPLETE
 
-- [ ] 9a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
-- [ ] 9a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
-              SigFigsToBits algebra
-- [ ] 9a-iii: Algorithm writeup — tiered adaptive (v5), fastPath proof,
-              gatherRans7/AnalyzeTiers invariant
-- [ ] 9a-iv:  Stream format specification (v1–v5 headers, symbol alphabets,
-              payload rules, decode dispatch)
-- [ ] 9a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
-- [ ] 9b-i:   Integration guide (library API walkthrough, embed example,
-              document DriftMode C)
-- [ ] 9b-ii:  Benchmark white paper section (M3–M7 results, zstd comparison)
-- [ ] 9b-iii: Publish — tag v0.9.0, push to public remote
+Change `--sig-figs N` to guarantee N significant decimal figures in the
+*reconstructed* values end-to-end (not just per-ratio). Reanchor events
+fire adaptively when accumulated error hits the threshold rather than at a
+fixed cadence — on smooth data this is much rarer than fixed-K, improving
+compression without sacrificing the guarantee.
+
+- [x] 9a:     Design — new SigFigsToMaxK helper, EncodeOptions.AdaptiveReanchor
+              field, CLI --sig-figs semantics change (no backward-compat concern)
+- [x] 9b-i:   Drift tracking in gatherRans7/gatherRans/encodeRaw — Mode A
+              (shadow reconstruction), Mode B (Kahan result), Mode C (prev*ratio)
+- [x] 9b-ii:  SigFigsToTolerance / SigFigsToBits / SigFigsToMaxK in quantize.go
+              (SigFigsToTolerance upper clamp raised 9→11 for N+2 calls up to N=9)
+- [x] 9b-iii: CLI update (main.go) — wire ε_per_ratio and K_max from --sig-figs;
+              short flags -n/-a; --sig-figs + --auto mutual exclusion guard
+- [x] 9b-iv:  AnalyzeTiers / AnalyzeDrift updated for end-to-end semantics
+- [x] 9c-i:   TestAdaptiveReanchorTriggered — adversarial monotone drift sequence
+- [x] 9c-ii:  TestAdaptiveReanchorSparse — near-constant data, count reanchors
+- [x] 9c-iii: TestSigFigsEndToEndGuarantee — N=3,4,5,6; 10k values; max error
+- [x] 9c-iv:  TestSigFigsToMaxK — boundary unit test for new helper
+- [x] 9c-v:   Harness: added G-4sf/AdaptiveReanchor + G-6sf/AdaptiveReanchor rows
+- [x] 9d:     go vet + staticcheck clean; coverage 85.0% (146/146 tests pass;
+              new floor after M9 adds adaptive branches; pre-M9 floor was 87%)
+- [x] 9e:     README updated: leads with -n 4, per-ratio vs end-to-end documented
+- [x] 9f:     PLAN/ROADMAP updated; M9 COMPLETE
+
+### Milestone 10 — Formalization
+
+- [ ] 10a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
+- [ ] 10a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
+               SigFigsToBits algebra
+- [ ] 10a-iii: Algorithm writeup — tiered adaptive (v5), fastPath proof,
+               gatherRans7/AnalyzeTiers invariant
+- [ ] 10a-iv:  Stream format specification (v1–v5 headers, symbol alphabets,
+               payload rules, decode dispatch)
+- [ ] 10a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
+- [ ] 10a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
+- [ ] 10b-i:   Integration guide (library API walkthrough, embed example,
+               document DriftMode C)
+- [ ] 10b-ii:  Benchmark white paper section (M3–M9 results, zstd comparison)
+- [ ] 10b-iii: Publish — tag v1.0.0, push to public remote
 
 ---
 
