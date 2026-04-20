@@ -107,10 +107,11 @@ const (
 
 // DefaultPrecisionBits is the quantisation depth used when
 // EncodeOptions.PrecisionBits is 0 and EntropyMode is EntropyQuantized.
-// 8 bits ≈ 2 significant figures (u8 payload tier, 1 byte/symbol).
-// Use AnalyzePrecision to select precision appropriate for the data, or
-// set PrecisionBits explicitly: 16 = u16 tier (~4 sf), 30 = u32 tier (~9 sf).
-const DefaultPrecisionBits = 8
+// 16 bits ≈ 4–5 significant figures (u16 payload tier, 2 bytes/symbol).
+// Within the u16 tier (bits 9–16), all depths encode to the same byte count,
+// so 16 is both the ceiling and the safest default. Use AnalyzePrecision to
+// select precision appropriate for the data, or set PrecisionBits explicitly.
+const DefaultPrecisionBits = 16
 
 // Classify returns the RatioClass for a computed ratio value.
 // The input should be the result of current/prev where prev != 0.
