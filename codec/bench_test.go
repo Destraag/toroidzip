@@ -400,3 +400,46 @@ func BenchmarkAnalyzePrecisionByDataset(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkAdaptiveEncode profiles the adaptive (v4) encode path:
+// ratio compute loop, per-ratio ε decision, and rANS table build.
+// Run with -cpuprofile=cpu.prof to capture a pprof profile.
+func BenchmarkAdaptiveEncode(b *testing.B) {
+	const n = 50_000
+	data := makeSensorStream(n)
+	opts := codec.EncodeOptions{
+		EntropyMode:      codec.EntropyAdaptive,
+		DriftMode:        codec.DriftReanchor,
+		ReanchorInterval: 256,
+		PrecisionBits:    16,
+		Tolerance:        1e-4,
+	}
+	b.SetBytes(int64(n) * 8)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var buf bytes.Buffer
+		_ = codec.Encode(data, &buf, opts)
+	}
+}
+
+// BenchmarkAdaptiveDecode profiles the adaptive (v4) decode path:
+// rANS decode, ClassNormalExact fallback handling.
+func BenchmarkAdaptiveDecode(b *testing.B) {
+	const n = 50_000
+	data := makeSensorStream(n)
+	opts := codec.EncodeOptions{
+		EntropyMode:      codec.EntropyAdaptive,
+		DriftMode:        codec.DriftReanchor,
+		ReanchorInterval: 256,
+		PrecisionBits:    16,
+		Tolerance:        1e-4,
+	}
+	var enc bytes.Buffer
+	_ = codec.Encode(data, &enc, opts)
+	encData := enc.Bytes()
+	b.SetBytes(int64(n) * 8)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = codec.Decode(bytes.NewReader(encData))
+	}
+}

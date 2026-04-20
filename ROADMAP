@@ -179,7 +179,30 @@ improvements surfaced before formalizing.
   Lossless ratio ~1.0007 on all smooth datasets — known; IdentityEpsilon too tight
   DriftReanchor ~3.4× faster than DriftCompensate; identical output — confirmed
   Stale harness note "not yet implemented (M5)" removed — committed this run
-- [ ] 6b: pprof profile — adaptive encode on Sensor n=50000; report hot paths
+- [x] 6b: pprof profile — adaptive encode on Sensor n=50000; report hot paths
+
+  Results (BenchmarkAdaptiveEncode, 5s, Ryzen 7 2700X, 56.66 MB/s encode):
+    83.8% cum — gatherRans6 (per-ratio ε decision loop)
+      42.6% cum —   DequantizeRatio → math.Pow (Exp+Pow for dequantize)
+      31.4% cum —   QuantizeRatio → math.Log (log-space mapping)
+      23.5% flat —  math.archLog (Log itself — transcendental, unavoidable)
+      17.6% flat —  math.archExp (Exp inside Pow — transcendental, unavoidable)
+     5.3% cum — writeRansBody6 + RansEncode6 (rANS encode — near-free)
+     1.7% cum — RansCountFreqs6 + buildRansTables6 (table build — negligible)
+
+  Key finding: the bottleneck is QuantizeRatio+DequantizeRatio called TWICE
+  per ClassNormal ratio in gatherRans6 (once to quantize, once to dequantize
+  for error measurement). The transcendentals (Log/Exp/Pow) dominate.
+  rANS table build is NOT the bottleneck — no tuning needed there.
+
+  Optimisation opportunity (6e candidate):
+    Eliminate the DequantizeRatio call in gatherRans6. The error can be
+    computed from the quantized index directly without round-tripping through
+    float64: err = |ratio - dequant| / ratio. But dequant requires Exp—
+    we can instead bound error analytically from the bit-depth step size
+    (delta = 2^(1/2^bits) - 1 for log-space quantization), making the
+    per-ratio decision a single comparison with no Exp call.
+    Estimated saving: ~40% of total encode time (eliminates one Exp+Pow per ratio).
 - [ ] 6c: Full code review — correctness, naming, edge cases, API clarity
 - [ ] 6d: External comparison (bench_m4.sh) with v4 adaptive included;
           does adaptive beat Q-3sf at bounded error?
