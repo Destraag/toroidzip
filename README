@@ -14,10 +14,8 @@ and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
 Status: Milestone 6 complete — tuning, benchmarking, and code review done;
-adaptive fast-path: analytical delta bound eliminates per-ratio Dequantize call
-when guaranteed safe (+4.9% encode speed); 2 bugs fixed (analyze subcommand,
-drift-mode CLI default); external comparison confirms adaptive ≈ Q-3sf on
-smooth data (<0.05% overhead) with bounded error guarantee; all tests passing.
+Milestone 7 in progress — tiered adaptive fallback (v5 stream, ClassNormal32)
+adding u32 middle tier between uint16 and float64 fallback paths.
 
 Usage
 -----

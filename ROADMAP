@@ -240,11 +240,43 @@ improvements surfaced before formalizing.
           Speedup: 56.66 → 59.40 MB/s (+4.9%). rANS table tuning: 1.7% of time — no gap.
 - [x] 6f: README/PLAN/ROADMAP updated; all tests passing; M6 closed
 
-### Milestone 7 — Formalization
+### Milestone 7 — Tiered adaptive fallback (v5 stream)
+
+Currently the adaptive encoder has two outcomes for a ClassNormal ratio:
+  - Pass ε at 16 bits → uint16 (2 bytes)
+  - Fail → ClassNormalExact → float64 (8 bytes)
+
+This skips the u32 tier entirely. Adding a middle tier:
+  - Pass ε at 16 bits → ClassNormal16 → uint16 (2 bytes)   [renamed from ClassNormal]
+  - Fail at 16 bits, pass ε at 30 bits → ClassNormal32 → uint32 (4 bytes)   [new]
+  - Fail at 30 bits → ClassNormalExact → float64 (8 bytes)
+
+Benefit: ratios that resist 16-bit quantization but pass 30-bit cost 4 bytes
+instead of 8. Win band: ε values roughly 1e-6 to 1e-4 (tight-tolerance use cases).
+Fast path (delta16 < tol) unchanged — still skips all checks for common case.
+
+Tasks:
+- [ ] 7a: Add ClassNormal32=6, ClassNormalExact bumped to 7 in boundary.go;
+          update Classify/IsBoundary if needed; all existing tests still pass
+- [ ] 7b: 7-symbol rANS: RansFreqs7, RansEncode7, RansDecode7, RansCountFreqs7
+          (mirror of 6-symbol API); new rANS tests incl. 6/7-symbol compat guard
+- [ ] 7c: v5 stream constant; gatherRans7 with tiered fallback logic;
+          encodeAdaptive dispatches to gatherRans7 + writeRansBody7;
+          decodeV5 added; Decode dispatches on version byte
+- [ ] 7d: bench_m4.sh --adaptive updated to exercise v5 path;
+          harness extended with tight-tolerance (ε=1e-6) row to show u32 tier benefit;
+          results recorded here
+- [ ] 7e: README/PLAN/ROADMAP updated; all tests passing; M7 closed
+
+Note: v4 stream (ClassNormal=5 alphabet) remains decodeable — Decode dispatches
+on the version byte. No existing encoded files are broken.
+
+### Milestone 8 — Formalization
 - Algorithm writeup with mathematical basis
 - Integration guide (library API)
-- Benchmark white paper section: M3/M4/M5/M6 results
-- Publish results after M6 confirms design stability
+- Benchmark white paper section: M3/M4/M5/M6/M7 results
+- Stream format specification (v1–v5 headers, symbol alphabets)
+- Publish results after M7 confirms design stability
 
 ---
 
@@ -284,3 +316,31 @@ improvements surfaced before formalizing.
     // Precision conversion
     bits := codec.SigFigsToBits(6)   // 6 sig figs → bit depth
     figs := codec.BitsToSigFigs(20)  // 20 bits → sig figs
+
+---
+
+## Future enhancements (not scheduled)
+
+### v6 — Predictive-residual lossless stream
+On smooth data, consecutive ratios are very similar at the bit level.
+A predictor (e.g. last ratio, or linear extrapolation) + entropy-coded
+residual could achieve genuinely lossless compression better than v2's
+~1.0 ratio. Key risk: ratios are already a first-difference transform on
+values; a second differencing layer may not yield a meaningful gain in
+practice. Requires benchmark validation before committing to the design.
+Not pursued at this time — bounded-loss v4 adaptive is sufficient for
+current use cases.
+
+### 24-bit payload tier
+Current tiers are uint8/uint16/uint32 (1/2/4 bytes) — native Go types,
+trivial to read/write. A 24-bit tier would cover sig figs 5–7 at 3 bytes
+instead of 4, saving 25% for that precision range. Requires manual bit
+packing. Worth considering if the u32 tier proves to be a bottleneck in
+practice.
+
+### CLI UX: tier-aware precision feedback and --bytes flag
+When --sig-figs N is given, the CLI should inform the user of the actual
+tier ceiling and free precision gain, e.g.:
+  "--sig-figs 3 → 10 bits (u16 tier; bumped to 4 sig figs free)"
+Accepting --bytes 1|2|4 as an alternative input is also worth exploring —
+it maps directly to tiers and is more honest about storage cost than sig figs.
