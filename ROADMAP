@@ -221,8 +221,19 @@ improvements surfaced before formalizing.
   Noted (not changed):
     7. DefaultPrecisionBits=8 (~2sf) is a footgun for bare EncodeOptions{};
        comment improved but value unchanged (breaking change for library users)
-- [ ] 6d: External comparison (bench_m4.sh) with v4 adaptive included;
-          does adaptive beat Q-3sf at bounded error?
+- [x] 6d: External comparison (bench_m4.sh) with v4 adaptive included
+          `--adaptive` flag added to bench_m4.sh (--tolerance 1e-4 --precision 16)
+          Results (n=5000, zstd+brotli best-effort, no fpzip):
+          | Rank | Codec      | Mode              | Avg ratio |
+          |-----:|:-----------|:------------------|----------:|
+          |    1 | toroidzip  | Q-3sf/Reanchor    |    0.2551 |
+          |    2 | toroidzip  | Adap-ε1e-4/16b    |    0.2733 |
+          |    3 | toroidzip  | Q-6sf/Reanchor    |    0.5040 |
+          |    5 | brotli     | q=11              |    0.8600 |
+          |    6 | zstd       | level 19          |    0.8968 |
+          Smooth datasets: adaptive ≈ Q-3sf (0.2550 vs 0.2549; <0.05% overhead)
+          Hard dataset (neuralweight): adaptive 0.3651 vs Q-3sf 0.2561 (expected; bounded error requires more bits)
+          Conclusion: adaptive buys bounded error guarantee at ~7% avg size cost; cost is near-zero on smooth data
 - [ ] 6e: Address improvements surfaced by 6b–6d (rANS tuning only if
           profiling shows measurable gap; no speculative refactoring)
 - [ ] 6f: Update README/PLAN/ROADMAP with M6 findings; confirm all tests
