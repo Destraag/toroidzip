@@ -230,17 +230,14 @@ func SigFigsToTolerance(n int) float64 {
 	return 0.5 * math.Pow(10, float64(-n))
 }
 
-// SigFigsToMaxK returns the maximum reanchor interval cap that guarantees
-// end-to-end N-significant-figure reconstruction even in the adversarial
-// (same-sign drift) case, when per-ratio tolerance is SigFigsToTolerance(N+2).
-//
-// Derivation: K_max × ε_per_ratio ≤ T_end
-//
-//	= SigFigsToTolerance(N) / SigFigsToTolerance(N+2) = 10² = 100 (N-independent).
-//
-// n is accepted for documentation clarity; the return value is always 100.
+// SigFigsToMaxK returns the circuit-breaker reanchor interval for N sig figs.
+// The end-to-end guarantee is owned by the adaptive drift check in gatherRans7
+// (reanchor fires whenever accumulated error exceeds SigFigsToTolerance(N)).
+// K_max is only a last-resort backstop for pathological inputs where the drift
+// check never fires — "something has gone very wrong" territory.
+// Returns 10,000 for all N; n is accepted for API consistency.
 func SigFigsToMaxK(_ int) int {
-	return 100
+	return 10_000
 }
 
 // BitsToSigFigs returns the number of significant figures guaranteed by B bits

@@ -57,6 +57,9 @@ func runEncode(args []string) error {
 		"guarantee N significant figures end-to-end in reconstructed values (1-9);\n"+
 			"\timplies --entropy-mode adaptive with adaptive reanchoring")
 	fs.IntVar(sigFigs, "n", 0, "shorthand for --sig-figs")
+	bytesFlag := fs.Int("bytes", 0,
+		"storage tier by byte width: 1=u8 (~2 sf), 2=u16 (~4 sf), 4=u32 (~9 sf);\n"+
+			"\timplies --entropy-mode adaptive; cannot combine with --sig-figs")
 	precBits := fs.Int("precision", 0,
 		"precision bits (1-16 for adaptive, 1-30 for quantized); cannot combine with --sig-figs")
 	tolerance := fs.Float64("tolerance", 0.0,
@@ -85,6 +88,18 @@ func runEncode(args []string) error {
 	// Validation.
 	if *lossy && !*auto {
 		return fmt.Errorf("--lossy requires --auto")
+	}
+	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 4 {
+		return fmt.Errorf("--bytes must be 1, 2, or 4 (got %d)", *bytesFlag)
+	}
+	if *bytesFlag > 0 && *sigFigs > 0 {
+		return fmt.Errorf("--bytes and --sig-figs cannot both be set")
+	}
+	if *bytesFlag > 0 && *precBits > 0 {
+		return fmt.Errorf("--bytes and --precision cannot both be set")
+	}
+	if *bytesFlag > 0 && *auto {
+		return fmt.Errorf("--bytes and --auto cannot both be set")
 	}
 	if *sigFigs > 0 && *precBits > 0 {
 		return fmt.Errorf("--sig-figs and --precision cannot both be set")
@@ -139,9 +154,9 @@ func runEncode(args []string) error {
 		*reanchorInterval = codec.DefaultReanchorInterval
 	}
 
-	// --sig-figs N: end-to-end reconstruction guarantee.
+	// --sig-figs N / --bytes B: end-to-end reconstruction guarantee.
 	// Forces adaptive mode, sets per-ratio ε 100× tighter than T_end,
-	// enables adaptive reanchoring, and caps reanchor interval at K_max=100.
+	// enables adaptive reanchoring, caps reanchor interval at K_max circuit breaker.
 	var endToEndTolerance float64
 	adaptiveReanchor := false
 	precisionBits := 0
@@ -154,8 +169,37 @@ func runEncode(args []string) error {
 		endToEndTolerance = codec.SigFigsToTolerance(*sigFigs) // T_end guarantee
 		adaptiveReanchor = true
 		if !reanchorExplicit {
-			*reanchorInterval = codec.SigFigsToMaxK(*sigFigs) // safety cap = 100
+			*reanchorInterval = codec.SigFigsToMaxK(*sigFigs) // circuit breaker = 10000
 		}
+		// Tier feedback: show which storage tier --sig-figs N selects.
+		ceilBits := tierCeilingBits(precisionBits)
+		fmt.Fprintf(os.Stderr, "-n %d: %d bits → %s tier (ceiling %d bits / %d sig figs; extra precision free; K_max=%d)\n",
+			*sigFigs, precisionBits, tierName(ceilBits), ceilBits,
+			codec.BitsToSigFigs(ceilBits), codec.SigFigsToMaxK(*sigFigs))
+	} else if *bytesFlag > 0 {
+		// --bytes B: select storage tier directly by byte width.
+		var ceilBits int
+		switch *bytesFlag {
+		case 1:
+			ceilBits = 8
+		case 2:
+			ceilBits = 16
+		default: // 4
+			ceilBits = 30
+		}
+		sf := codec.BitsToSigFigs(ceilBits)
+		entropyMode = codec.EntropyAdaptive
+		precisionBits = ceilBits
+		if *tolerance == 0 {
+			*tolerance = codec.SigFigsToTolerance(sf + 2)
+		}
+		endToEndTolerance = codec.SigFigsToTolerance(sf)
+		adaptiveReanchor = true
+		if !reanchorExplicit {
+			*reanchorInterval = codec.SigFigsToMaxK(sf)
+		}
+		fmt.Fprintf(os.Stderr, "--bytes %d: %s tier (%d bits / %d sig figs; K_max=%d)\n",
+			*bytesFlag, tierName(ceilBits), ceilBits, sf, codec.SigFigsToMaxK(sf))
 	} else if *precBits > 0 {
 		if entropyMode != codec.EntropyAdaptive {
 			entropyMode = codec.EntropyQuantized
@@ -219,6 +263,8 @@ func runAnalyze(args []string) error {
 	sigFigs := fs.Int("sig-figs", 0,
 		"show adaptive tier preview for this many significant figures (1-9)")
 	fs.IntVar(sigFigs, "n", 0, "shorthand for --sig-figs")
+	bytesFlag := fs.Int("bytes", 0,
+		"show adaptive tier preview for this byte width: 1=u8, 2=u16, 4=u32")
 	tolerance := fs.Float64("tolerance", 0.0,
 		"show adaptive tier preview at this relative tolerance (e.g. 1e-4)")
 	precBits := fs.Int("precision", 0,
@@ -226,8 +272,17 @@ func runAnalyze(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 4 {
+		return fmt.Errorf("--bytes must be 1, 2, or 4 (got %d)", *bytesFlag)
+	}
 	if *sigFigs > 0 && *tolerance != 0 {
 		return fmt.Errorf("--sig-figs and --tolerance cannot both be set")
+	}
+	if *sigFigs > 0 && *bytesFlag > 0 {
+		return fmt.Errorf("--sig-figs and --bytes cannot both be set")
+	}
+	if *bytesFlag > 0 && *tolerance != 0 {
+		return fmt.Errorf("--bytes and --tolerance cannot both be set")
 	}
 	if fs.NArg() < 1 {
 		return fmt.Errorf("analyze requires <input.f64>")
@@ -285,14 +340,28 @@ func runAnalyze(args []string) error {
 	fmt.Printf("  speed note  : mode A (Reanchor) encodes ~3x faster than mode B (Compensate)\n")
 	fmt.Printf("                at identical output size. Use A for throughput-sensitive workloads.\n")
 
-	// Adaptive tier preview — printed only when --tolerance or --sig-figs is given.
+	// Adaptive tier preview — printed only when --tolerance, --sig-figs, or --bytes is given.
+	// --bytes B: translate to the same sig-figs path via BitsToSigFigs(ceilBits).
+	if *bytesFlag > 0 {
+		var ceilBits int
+		switch *bytesFlag {
+		case 1:
+			ceilBits = 8
+		case 2:
+			ceilBits = 16
+		default: // 4
+			ceilBits = 30
+		}
+		*sigFigs = codec.BitsToSigFigs(ceilBits)
+		*precBits = ceilBits
+	}
 	tol := *tolerance
 	bits := *precBits
 	var endToEndTol float64
 	if *sigFigs > 0 {
 		// Use the same per-ratio ε the encoder uses: SigFigsToTolerance(N+2).
-		// The end-to-end guarantee (N sig figs) is enforced by adaptive reanchoring
-		// with K_max = SigFigsToMaxK(N) = 100.
+		// The end-to-end guarantee (N sig figs) is enforced by the adaptive drift
+		// check in gatherRans7; K_max = SigFigsToMaxK(N) = 10000 is a circuit breaker.
 		tol = codec.SigFigsToTolerance(*sigFigs + 2)
 		endToEndTol = codec.SigFigsToTolerance(*sigFigs)
 		if bits == 0 {
@@ -311,7 +380,7 @@ func runAnalyze(args []string) error {
 		if endToEndTol > 0 {
 			fmt.Printf("  sig-figs guarantee : %d sig figs end-to-end (T_end = %.2e)\n",
 				*sigFigs, endToEndTol)
-			fmt.Printf("  per-ratio epsilon  : %.2e  (100× tighter; K_max = %d)\n",
+			fmt.Printf("  per-ratio epsilon  : %.2e  (K_max = %d circuit breaker)\n",
 				tol, codec.SigFigsToMaxK(*sigFigs))
 		} else {
 			fmt.Printf("  epsilon     : %.2e\n", tol)
@@ -378,6 +447,33 @@ func writeFloat64File(path string, values []float64) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// tierCeilingBits returns the bit-depth ceiling of the storage tier for bits b.
+//   bits 1–8  → 8  (u8)
+//   bits 9–16 → 16 (u16)
+//   bits 17+  → 30 (u32)
+func tierCeilingBits(b int) int {
+	switch {
+	case b <= 8:
+		return 8
+	case b <= 16:
+		return 16
+	default:
+		return 30
+	}
+}
+
+// tierName returns the Go type name for a tier ceiling bit depth.
+func tierName(ceilBits int) string {
+	switch ceilBits {
+	case 8:
+		return "u8"
+	case 16:
+		return "u16"
+	default:
+		return "u32"
+	}
+}
+
 func usage() {
 	fmt.Fprintln(os.Stderr, `toroidzip — ratio-first float64 codec
 
@@ -394,19 +490,24 @@ Encode flags:
                           B = compensate: Kahan log-space (identical output to A)
                           C = quantize: ratios rounded to float32
   --reanchor-interval N   verbatim anchor every N values (default 256)
-  --sig-figs N            significant figures 1-9; implies quantized (or sets
-                          adaptive precision + tolerance together)
+  --sig-figs N / -n N     guarantee N significant figures end-to-end (1-9);
+                          implies adaptive mode with adaptive reanchoring;
+                          prints selected tier to stderr
+  --bytes 1|2|4           select storage tier by byte width (1=u8/~2sf,
+                          2=u16/~4sf, 4=u32/~9sf); implies adaptive mode;
+                          cannot combine with --sig-figs
   --precision B           precision bits; 1-30 for quantized, 1-16 for adaptive
   --tolerance T           max relative quantisation error for adaptive mode
                           (0 = lossless-equivalent; e.g. 1e-4 for ~4 sig figs)
                           only valid with --entropy-mode adaptive
-  --auto                  auto-select parameters from data analysis
+  --auto / -a             auto-select parameters from data analysis
   --lossy                 with --auto: use adaptive encoding at recommended
                           precision and tolerance 1e-4
 
 Analyze flags:
-  --sig-figs N            show adaptive tier preview for N significant figures
+  --sig-figs N / -n N     show adaptive tier preview for N significant figures
+  --bytes 1|2|4           show adaptive tier preview for this byte width
   --tolerance T           show adaptive tier preview at tolerance T
   --precision B           u16 precision bits for tier preview (default: derived
-                          from --sig-figs or recommended bits)`)
+                          from --sig-figs / --bytes or recommended bits)`)
 }

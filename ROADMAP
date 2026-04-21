@@ -4,7 +4,7 @@ Scope: PUBLIC — milestone tracker and intent. Committed to git.
         Implementation detail, design rationale, and session notes live
         in PLAN (gitignored, internal only).
 
-## Status: Milestone 6 complete
+## Status: Milestone 10 complete
 
 ---
 
@@ -343,21 +343,34 @@ compression without sacrificing the guarantee.
 - [x] 9e:     README updated: leads with -n 4, per-ratio vs end-to-end documented
 - [x] 9f:     PLAN/ROADMAP updated; M9 COMPLETE
 
-### Milestone 10 — Formalization
+### Milestone 10 — K_max decoupling + CLI UX polish
 
-- [ ] 10a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
-- [ ] 10a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
+Two design correctness items identified during M9 review, plus tier-aware
+CLI feedback. All S-effort. No stream format changes.
+
+- [x] 10a: K_max circuit breaker — SigFigsToMaxK returns 10,000 (N-independent);
+           doc comment updated; TestSigFigsToMaxK rewritten (circuit-breaker check)
+
+- [x] 10b: CLI tier feedback — --sig-figs N and --bytes 1|2|4 both print selected
+           tier to stderr on encode; --bytes added to encode and analyze subcommands
+
+- [x] 10c: 149/149 tests passing; staticcheck clean; README updated; push
+
+### Milestone 11 — Formalization
+
+- [ ] 11a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
+- [ ] 11a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
                SigFigsToBits algebra
-- [ ] 10a-iii: Algorithm writeup — tiered adaptive (v5), fastPath proof,
+- [ ] 11a-iii: Algorithm writeup — tiered adaptive (v5), fastPath proof,
                gatherRans7/AnalyzeTiers invariant
-- [ ] 10a-iv:  Stream format specification (v1–v5 headers, symbol alphabets,
+- [ ] 11a-iv:  Stream format specification (v1–v5 headers, symbol alphabets,
                payload rules, decode dispatch)
-- [ ] 10a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
-- [ ] 10a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
-- [ ] 10b-i:   Integration guide (library API walkthrough, embed example,
+- [ ] 11a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
+- [ ] 11a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
+- [ ] 11b-i:   Integration guide (library API walkthrough, embed example,
                document DriftMode C)
-- [ ] 10b-ii:  Benchmark white paper section (M3–M9 results, zstd comparison)
-- [ ] 10b-iii: Publish — tag v1.0.0, push to public remote
+- [ ] 11b-ii:  Benchmark white paper section (M3–M10 results, zstd comparison)
+- [ ] 11b-iii: Publish — tag v1.0.0, push to public remote
 
 ---
 
@@ -404,19 +417,9 @@ compression without sacrificing the guarantee.
 
 Effort key: S = hours, M = 1–3 days, L = 1–2 weeks, XL = milestone-sized
 
-### CLI UX: tier-aware precision feedback and --bytes flag  [effort: S]
-When --sig-figs N is given, the CLI should inform the user of the actual
-tier ceiling and free precision gain, e.g.:
-  "--sig-figs 3 → 10 bits (u16 tier; bumped to 4 sig figs free)"
-Accepting --bytes 1|2|4 as an alternative input is also worth exploring —
-it maps directly to tiers and is more honest about storage cost than sig figs.
+---
 
-### 24-bit payload tier  [effort: S–M]
-Current tiers are uint8/uint16/uint32 (1/2/4 bytes) — native Go types,
-trivial to read/write. A 24-bit tier would cover sig figs 5–7 at 3 bytes
-instead of 4, saving 25% for that precision range. Requires manual bit
-packing and a new stream version byte. Worth considering if the u32 tier
-proves to be a bottleneck in practice.
+### Nice to have — clear value, no pre-work required
 
 ### SIMD / intrinsics for QuantizeRatio hot loop  [effort: M]
 Go's compiler handles the inner loop reasonably today. Hand-written SIMD
@@ -427,35 +430,15 @@ profiling to confirm it is actually the bottleneck before investing.
 Replace the slice-based Encode API with a streaming encoder that does not
 require the full array in memory — useful for very large files or
 pipe-based workflows. API-breaking change; requires a new public interface.
-M9+ candidate once the 1D design is stable.
+Candidate post-M11 once the 1D design is stable.
 
 ### Parallel encode (goroutines per reanchor segment)  [effort: M]
 Each reanchor segment is fully independent — embarrassingly parallel.
 A worker-pool encoder could saturate multiple cores with no correctness
-risk. Requires profiling to confirm encode is the bottleneck; decode cannot
-be trivially parallelised because payload offsets are not independently
-seekable in the current stream layout.
-
-### Delta coding of quantized index stream  [effort: L]
-Before rANS, encode the delta between adjacent class symbols rather than
-the raw symbols. For smooth data Δ≈0 dominates, giving a more skewed
-distribution and higher rANS compression. Zero benefit for volatile/random
-data. Requires a new stream version and benchmark validation to confirm
-real-world gain before committing to the format change. M9+ candidate.
-
-### Context-adaptive rANS  [effort: L]
-Maintain per-context frequency tables (e.g. keyed on the previous class
-symbol) instead of one global table. Each per-context distribution has
-lower entropy than the global one. Header grows by one table per context.
-Meaningful gain only when class transitions are structured. M10+ candidate.
-
-### v6 — Predictive-residual lossless stream  [effort: L]
-On smooth data, consecutive ratios are very similar at the bit level.
-A predictor (last ratio or linear extrapolation) + entropy-coded residual
-could achieve genuinely lossless compression better than v2's ~1.0 ratio.
-Key risk: ratios are already a first-difference transform on values; a
-second differencing layer may not yield a meaningful gain in practice.
-Requires benchmark validation before committing to the design.
+risk. With adaptive reanchoring, segment boundaries are data-driven so a
+two-pass approach is needed (pass 1: identify boundaries; pass 2: encode
+segments in parallel). Decode parallelism requires a segment offset table
+in the stream header — new stream version. Worth doing after M11.
 
 ### 2D / multi-dimensional extension  [effort: XL]
 Accept a 2D float64 array; encode each row as a ratio stream; add
@@ -463,3 +446,40 @@ cross-row prediction for spatially correlated columns. Relevant for sensor
 matrices, time-series databases, and neural weight tensors. Changes the
 fundamental API contract. Revisit after the white paper establishes and
 validates the 1D design. Candidate for a separate package or v2 module.
+
+---
+
+### Benchmark-gated — only proceed if a benchmark first shows measurable gain
+
+### 24-bit payload tier  [effort: M]
+A 24-bit tier would cover sig figs 5–7 at 3 bytes instead of 4, saving
+25% for that precision range. Requires manual bit packing, a new class
+symbol, new 8-symbol rANS alphabet, and a new stream version byte —
+M7-scale work. Current harness shows Q-6sf and Q-9sf produce identical
+file sizes (both u32), so the u32 tier is not demonstrably over-used.
+Gate on: harness showing a materially different byte count between
+17-bit and 30-bit precision on a real dataset.
+
+### Delta coding of quantized index stream  [effort: L]
+Before rANS, encode the delta between adjacent class symbols rather than
+the raw symbols. For smooth data Δ≈0 dominates, giving a more skewed
+distribution and higher rANS compression. Zero benefit for volatile/random
+data. Requires a new stream version.
+Gate on: prototype delta transform showing ≥5% ratio improvement on
+at least two dataset classes in the existing harness.
+
+### Context-adaptive rANS  [effort: L]
+Maintain per-context frequency tables (keyed on previous class symbol)
+instead of one global table. Each per-context distribution has lower
+entropy than the global one. Header grows by one table per context.
+Meaningful gain only when class transitions are structured.
+Gate on: entropy analysis showing per-context entropy materially lower
+than global entropy on target datasets.
+
+### v6 — Predictive-residual lossless stream  [effort: L]
+A predictor (last ratio or linear extrapolation) + entropy-coded residual
+could achieve genuinely lossless compression better than v2's ~1.0 ratio.
+Key risk: ratios are already a first-difference transform on values; a
+second differencing layer may yield little in practice.
+Gate on: prototype residual coder showing lossless ratio < 0.90 on
+Smooth/Sensor dataset (current lossless is ~1.0007 — near-zero gain).

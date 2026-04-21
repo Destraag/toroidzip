@@ -13,9 +13,8 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 8 complete — test hardening, dead code cleanup, 87% coverage;
-Milestone 9 in progress — end-to-end significant-figure guarantee with adaptive
-drift-triggered reanchoring.
+Status: Milestone 10 complete — K_max decoupled (10,000 circuit breaker), --bytes 1|2|4 flag,
+tier-aware encode feedback; 149 tests, staticcheck clean.
 
 Usage
 -----
@@ -29,6 +28,9 @@ Usage
   # Lossy encode with end-to-end 4 significant figure guarantee
   toroidzip encode -n 4 input.f64 output.tzrz
   toroidzip encode --sig-figs 4 input.f64 output.tzrz   # same
+
+  # Lossy encode by storage byte width (1=u8/~2sf, 2=u16/~4sf, 4=u32/~9sf)
+  toroidzip encode --bytes 2 input.f64 output.tzrz
 
   # Auto-select entropy mode from data (lossless if compressible, else advise)
   toroidzip encode --auto input.f64 output.tzrz
@@ -60,9 +62,17 @@ Flags (encode)
       Guarantee N significant decimal figures in reconstructed values, end-to-end.
       This is the recommended lossy flag for most users.
       Internally sets per-ratio ε = 0.5×10^-(N+2), enables adaptive reanchoring,
-      and caps reanchor interval at 100 as a worst-case safety bound.
-      Cannot be combined with --auto, --precision, or a non-adaptive --entropy-mode.
+      and caps reanchor interval at 10,000 as a circuit-breaker backstop
+      (the adaptive drift check is the real guarantee; K_max is last resort).
+      Prints the selected storage tier to stderr on encode.
+      Cannot be combined with --auto, --bytes, --precision, or a non-adaptive --entropy-mode.
       Power users may override the derived per-ratio ε with an explicit --tolerance.
+
+  --bytes 1|2|4
+      Select storage tier by byte width: 1=u8 (~2 sig figs), 2=u16 (~4 sig figs),
+      4=u32 (~9 sig figs). Implies adaptive mode with adaptive reanchoring.
+      Prints the selected tier to stderr on encode.
+      Cannot be combined with --sig-figs, --bytes, --precision, or --auto.
 
   --tolerance T
       Max relative error per ratio in adaptive mode (e.g. 1e-4).
@@ -88,7 +98,7 @@ Flags (encode)
       C = quantize; encoder mirrors decoder's float32-rounded accumulation
 
   --reanchor-interval N
-      Safety cap on verbatim anchor cadence (default 256; default 100 with --sig-figs).
+      Safety cap on verbatim anchor cadence (default 256; default 10,000 with --sig-figs).
       Adaptive reanchoring may fire earlier when --sig-figs is active.
       An explicit value here overrides the --sig-figs derived cap.
 
@@ -96,6 +106,7 @@ Flags (analyze)
 ---------------
 
   --sig-figs N, -n N   show adaptive tier preview for N sig figs
+  --bytes 1|2|4        show adaptive tier preview for this byte width
   --tolerance T        show adaptive tier preview at this ε
   --precision N        u16 precision bits for tier preview (default: recommended bits)
 

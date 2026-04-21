@@ -89,7 +89,7 @@ func TestAdaptiveReanchorSparse(t *testing.T) {
 	const sigFigs = 4
 	endToEndTol := codec.SigFigsToTolerance(sigFigs)
 	perRatioTol := codec.SigFigsToTolerance(sigFigs + 2)
-	kMax := codec.SigFigsToMaxK(sigFigs) // 100
+	kMax := codec.SigFigsToMaxK(sigFigs) // 10000 circuit breaker
 
 	// Near-constant data with very small random perturbations.
 	rng := rand.New(rand.NewSource(42))
