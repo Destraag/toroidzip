@@ -171,6 +171,29 @@ func makeNeuralWeightProxy(n int) []float64 {
 	return out
 }
 
+// makeFloat32PrecisionSmooth generates a smooth sensor-like stream where the
+// signal has float32-class precision (~7 sig figs of real variation). Values
+// are generated at float64, then rounded to float32 at each step to simulate
+// storing float32 instrument readings in a float64 array.
+// Models: geospatial coordinates, scientific instrument output, CFD fields,
+// neural weight storage at float32 fidelity.
+func makeFloat32PrecisionSmooth(n int) []float64 {
+	out := make([]float64, n)
+	rng := newLCG(0xF32F32F3)
+	v := 100.0
+	for i := range out {
+		// Slow sinusoidal drift + float32-class noise (7 sf of real signal).
+		drift := 0.3 * math.Sin(2*math.Pi*float64(i)/float64(n/4))
+		noise := rng.float() * 0.0001
+		v *= math.Exp(drift/float64(n)*6 + noise)
+		// Round to float32 precision: this is the key difference from Sensor.
+		// The resulting float64 values differ from each other by ~1e-7 relative,
+		// giving ~7 sf of genuine signal variation.
+		out[i] = float64(float32(v))
+	}
+	return out
+}
+
 // ─── Correctness smoke tests for each generator ─────────────────────────────
 // These are fast sanity checks that each generator produces finite, non-zero
 // values and round-trips cleanly through the default encoder.

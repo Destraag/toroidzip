@@ -448,9 +448,10 @@ func writeFloat64File(path string, values []float64) error {
 }
 
 // tierCeilingBits returns the bit-depth ceiling of the storage tier for bits b.
-//   bits 1–8  → 8  (u8)
-//   bits 9–16 → 16 (u16)
-//   bits 17+  → 30 (u32)
+//
+//	bits 1–8  → 8  (u8)
+//	bits 9–16 → 16 (u16)
+//	bits 17+  → 30 (u32)
 func tierCeilingBits(b int) int {
 	switch {
 	case b <= 8:

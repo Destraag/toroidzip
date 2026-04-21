@@ -430,3 +430,145 @@ func TestM3Harness(t *testing.T) {
 	}
 	fmt.Println()
 }
+
+// TestU24Savings measures what fraction of u32 payloads (ClassNormal32) would
+// fit in 24 bits (quantized index < 2^24), to assess whether a 24-bit tier
+// would provide meaningful savings. Runs across all 7 dataset classes and
+// sig-figs values 5, 6, 7.
+//
+// A u32 payload uses index < 2^24 when the ratio is in the tightest ~6/8 of
+// the quantization range — roughly the interior two-thirds of the log-space.
+//
+// Run with:
+//
+//	go test ./codec/... -run=TestU24Savings -v -count=1
+func TestU24Savings(t *testing.T) {
+	const n = 50_000
+
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(n)},
+		{"Financial", makeFinancialWalk(n)},
+		{"MultiScale", makeScientificMultiScale(n)},
+		{"Volatile", makeVolatileSeries(n)},
+		{"NearConstant", makeNearConstant(n)},
+		{"NeuralWeight", makeNeuralWeightProxy(n)},
+		{"Float32Smooth", makeFloat32PrecisionSmooth(n)},
+	}
+
+	// u24Limit is the maximum index that fits in 24 bits.
+	const u24Limit = uint32(1 << 24)
+
+	type result struct {
+		dataset            string
+		sf                 int
+		totalRatios        int
+		u16Count           int
+		u32Count           int
+		u32FitsIn24        int // u32 payloads where index < 2^24
+		f64Count           int
+		bytesNow           int // bytes with current u16/u32/f64 tiers
+		bytesWith24        int // bytes if u32 payloads fitting in 24 bits used 3 bytes instead of 4
+	}
+
+	var results []result
+
+	for _, ds := range datasets {
+		for _, sf := range []int{5, 6, 7} {
+			bits := codec.SigFigsToBits(sf + 2)
+			if bits <= 0 || bits > 16 {
+				bits = 16
+			}
+			tol := codec.SigFigsToTolerance(sf + 2)
+
+			// Replicate tier-selection logic from gatherRans7.
+			const bits30 = 30
+			levels16 := uint32(1) << bits
+			levels30 := uint32(1) << bits30
+			delta16 := math.Pow(2, codec.QuantMaxLog2R/float64(levels16)) - 1
+			delta30 := math.Pow(2, codec.QuantMaxLog2R/float64(levels30)) - 1
+			fastPath := delta16 < tol
+
+			values := ds.data
+			prev := values[0]
+			var r result
+			r.dataset = ds.name
+			r.sf = sf
+
+			for i := 1; i < len(values); i++ {
+				ratio, class := codec.ComputeRatioExported(values[i], prev)
+				if class != codec.ClassNormal {
+					prev = values[i]
+					continue
+				}
+				r.totalRatios++
+
+				if ratio == 0 {
+					r.f64Count++
+					r.bytesNow += 8
+					r.bytesWith24 += 8
+					prev = values[i]
+					continue
+				}
+
+				sym16 := codec.QuantizeRatio(ratio, bits)
+				dequant16 := codec.DequantizeRatio(sym16, bits)
+
+				if fastPath || math.Abs(dequant16/ratio-1.0) < tol {
+					// u16 tier
+					r.u16Count++
+					r.bytesNow += 2
+					r.bytesWith24 += 2
+				} else {
+					sym30 := codec.QuantizeRatio(ratio, bits30)
+					dequant30 := codec.DequantizeRatio(sym30, bits30)
+					if delta30 < tol || math.Abs(dequant30/ratio-1.0) < tol {
+						// u32 tier — measure how many fit in 24 bits
+						r.u32Count++
+						r.bytesNow += 4
+						if sym30 < u24Limit {
+							r.u32FitsIn24++
+							r.bytesWith24 += 3
+						} else {
+							r.bytesWith24 += 4
+						}
+					} else {
+						// float64 exact
+						r.f64Count++
+						r.bytesNow += 8
+						r.bytesWith24 += 8
+					}
+				}
+				prev = values[i]
+			}
+			results = append(results, r)
+		}
+	}
+
+	// Print results table.
+	fmt.Printf("\n## U24 Savings Analysis — n=%d values\n\n", n)
+	fmt.Printf("Measures: of all ClassNormal ratios that fall into the u32 tier,\n")
+	fmt.Printf("how many have index < 2^24 and would save 1 byte with a 24-bit tier?\n\n")
+	fmt.Printf("| %-14s | %3s | %8s | %8s | %8s | %8s | %8s | %8s |\n",
+		"Dataset", "sf", "normals", "u16", "u32", "u32<24b", "pct<24b", "saving%")
+	fmt.Printf("|%s|%s|%s|%s|%s|%s|%s|%s|\n",
+		"---------------:", "----:", "---------:", "---------:",
+		"---------:", "---------:", "---------:", "---------:")
+
+	for _, r := range results {
+		pctFits := 0.0
+		if r.u32Count > 0 {
+			pctFits = float64(r.u32FitsIn24) / float64(r.u32Count) * 100
+		}
+		savingPct := 0.0
+		if r.bytesNow > 0 {
+			savingPct = float64(r.bytesNow-r.bytesWith24) / float64(r.bytesNow) * 100
+		}
+		fmt.Printf("| %-14s | %3d | %8d | %8d | %8d | %8d | %7.1f%% | %7.2f%% |\n",
+			r.dataset, r.sf, r.totalRatios, r.u16Count, r.u32Count,
+			r.u32FitsIn24, pctFits, savingPct)
+	}
+	fmt.Println()
+}

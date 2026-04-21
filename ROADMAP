@@ -356,20 +356,56 @@ CLI feedback. All S-effort. No stream format changes.
 
 - [x] 10c: 149/149 tests passing; staticcheck clean; README updated; push
 
-### Milestone 11 — Formalization
+### Milestone 11 — Signed-offset payload encoding (v6 stream)
+
+The current absolute-index payload places ratio=1.0 at index 2^29 (centre of
+the 30-bit log-space range). A smooth step of ratio=1.0001 produces absolute
+index ~536,889,320 — requiring 30 bits even though the deviation from identity
+is tiny. Nearly all u32 payloads on smooth data cluster near 2^29.
+
+The fix: store a signed 24-bit offset from centre (index - 2^29) rather than
+the absolute index. Ratio=1.0 → 0. A smooth Sensor step → ~18,000. This fits
+in 16 bits at 30-bit precision, turning most current u32 payloads into u16.
+
+Expected impact (from TestU24Savings baseline on n=50,000):
+  Sensor sf=5:  49,938 u32 payloads → potentially u16 (2 vs 4 bytes each)
+  Sensor sf=6:  49,995 u32 payloads → same
+Only extreme ratio events (jumps >2× or <0.5×) would still require u32.
+
+- [ ] 11a: Design — signed offset encoding; new ClassNormal32S symbol;
+           update QuantizeRatio/DequantizeRatio or add new pair;
+           derive new delta thresholds for tier-selection in gatherRans7
+
+- [ ] 11b: Implement v6 stream — encodeAdaptiveV6/decodeV6;
+           8-symbol rANS alphabet (ClassNormal32S replaces ClassNormal32
+           in the common case; ClassNormal32 kept for out-of-range values);
+           QuantPayloadTier updated; backward compat test for v5
+
+- [ ] 11c: Retest 24-bit tier using TestU24Savings against v6 stream —
+           measure how many remaining u32 payloads (out-of-range offsets)
+           fit in 24 bits; if >10% on any smooth dataset, 24-bit is worth
+           building on top of v6
+
+- [ ] 11d: TestSignedOffsetSavings — measure u32 reduction on all 7 dataset
+           classes at sf=5,6,7; confirm dominant payloads move to u16
+
+- [ ] 11e: go vet + staticcheck clean; coverage check; README + CLI reference
+           updated; PLAN/ROADMAP closed; push
+
+### Milestone 12 — Formalization
 
 - [ ] 11a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
 - [ ] 11a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
                SigFigsToBits algebra
-- [ ] 11a-iii: Algorithm writeup — tiered adaptive (v5), fastPath proof,
-               gatherRans7/AnalyzeTiers invariant
-- [ ] 11a-iv:  Stream format specification (v1–v5 headers, symbol alphabets,
+- [ ] 11a-iii: Algorithm writeup — tiered adaptive (v5/v6), fastPath proof,
+               gatherRans7/AnalyzeTiers invariant; signed-offset encoding rationale
+- [ ] 11a-iv:  Stream format specification (v1–v6 headers, symbol alphabets,
                payload rules, decode dispatch)
 - [ ] 11a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
 - [ ] 11a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
 - [ ] 11b-i:   Integration guide (library API walkthrough, embed example,
                document DriftMode C)
-- [ ] 11b-ii:  Benchmark white paper section (M3–M10 results, zstd comparison)
+- [ ] 11b-ii:  Benchmark white paper section (M3–M11 results, zstd comparison)
 - [ ] 11b-iii: Publish — tag v1.0.0, push to public remote
 
 ---
@@ -421,10 +457,26 @@ Effort key: S = hours, M = 1–3 days, L = 1–2 weeks, XL = milestone-sized
 
 ### Nice to have — clear value, no pre-work required
 
-### SIMD / intrinsics for QuantizeRatio hot loop  [effort: M]
-Go's compiler handles the inner loop reasonably today. Hand-written SIMD
-(via assembly or cgo) could lift throughput 2–4× on x86-64/ARM. Requires
-profiling to confirm it is actually the bottleneck before investing.
+### SIMD / intrinsics — uniform-stride throughput variant  [effort: L]
+SIMD requires a branch-free, uniform-stride payload loop. The v5 adaptive
+stream is fundamentally incompatible with this: per-ratio tier selection
+(u16/u32/f64) means stride varies by ratio. These two designs cannot share
+a hot path — SIMD requires a separate encoder/decoder pair.
+
+Proposed separation:
+  .tzrz   — current adaptive path (v1–v5); minimum bytes, mixed stride
+  .tzrzU  — SIMD uniform path; user picks one tier at encode time (u16 or
+            u32); decoder keyed on extension; no adaptive selection
+
+Tradeoff: .tzrz2 pays for headroom on easy ratios (same bytes as if all
+ratios used the chosen tier) in exchange for 2–4× encode/decode throughput.
+Target use case: real-time sensor ingest and live telemetry where throughput
+matters more than file size.
+
+Requires: Go assembly or cgo; platform-specific (x86-64 AVX2, ARM NEON);
+new CLI flag (--fast or --uniform); new extension registration.
+Gate on: profiling showing the quantize loop (not rANS) is the bottleneck
+at the target throughput, and that the uniform-stride assumption holds.
 
 ### Streaming encode (io.Reader input)  [effort: M]
 Replace the slice-based Encode API with a streaming encoder that does not
@@ -451,14 +503,25 @@ validates the 1D design. Candidate for a separate package or v2 module.
 
 ### Benchmark-gated — only proceed if a benchmark first shows measurable gain
 
-### 24-bit payload tier  [effort: M]
-A 24-bit tier would cover sig figs 5–7 at 3 bytes instead of 4, saving
-25% for that precision range. Requires manual bit packing, a new class
-symbol, new 8-symbol rANS alphabet, and a new stream version byte —
-M7-scale work. Current harness shows Q-6sf and Q-9sf produce identical
-file sizes (both u32), so the u32 tier is not demonstrably over-used.
-Gate on: harness showing a materially different byte count between
-17-bit and 30-bit precision on a real dataset.
+### 24-bit payload tier  [effort: M — retest after M11]
+A 24-bit tier was investigated via TestU24Savings (n=50,000, all 7 dataset
+classes, sf=5/6/7). Result: 0% savings on every smooth dataset including
+a dedicated Float32PrecisionSmooth class. 3% savings on NeuralWeight.
+
+Root cause: the current absolute-index encoding places ratio=1.0 at index
+2^29. All smooth-data u32 payloads cluster near centre (~530M), far above
+the 2^24 threshold. A 24-bit tier in the current scheme only fires on
+extreme downward ratio moves (ratio < ~0.067), which are boundary events,
+not precision events.
+
+Do not build in current form. Retest after M11 (signed-offset v6 stream):
+with centre at 0, smooth-data u32 payloads become small signed integers.
+Out-of-range offsets (extreme events) may then fall in a range where a
+24-bit tier is meaningfully smaller than u32. TestU24Savings step 11c
+will measure this directly.
+
+If 11c shows >10% of remaining u32 payloads fit in 24 bits on any smooth
+dataset, revisit this entry.
 
 ### Delta coding of quantized index stream  [effort: L]
 Before rANS, encode the delta between adjacent class symbols rather than
