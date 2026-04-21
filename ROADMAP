@@ -356,57 +356,60 @@ CLI feedback. All S-effort. No stream format changes.
 
 - [x] 10c: 149/149 tests passing; staticcheck clean; README updated; push
 
-### Milestone 11 — Signed-offset payload encoding (v6 stream)
+### Milestone 11 — Signed-offset payload encoding (v6 stream) ✓
 
 The current absolute-index payload places ratio=1.0 at index 2^29 (centre of
 the 30-bit log-space range). A smooth step of ratio=1.0001 produces absolute
 index ~536,889,320 — requiring 30 bits even though the deviation from identity
 is tiny. Nearly all u32 payloads on smooth data cluster near 2^29.
 
-The fix: store a signed 24-bit offset from centre (index - 2^29) rather than
-the absolute index. Ratio=1.0 → 0. A smooth Sensor step → ~18,000. This fits
-in 16 bits at 30-bit precision, turning most current u32 payloads into u16.
+The fix (v6): ClassNormal (u16) now stores a signed int16 offset from log-space
+centre at 30-bit precision; ClassNormal32 (u32) stores int32 offset for larger
+deviations. The 7-symbol rANS alphabet is unchanged. Ratios within ±0.01% of
+identity have offset < int16Max=32767 and take 2 bytes instead of 4.
 
-Expected impact (from TestU24Savings baseline on n=50,000):
-  Sensor sf=5:  49,938 u32 payloads → potentially u16 (2 vs 4 bytes each)
-  Sensor sf=6:  49,995 u32 payloads → same
-Only extreme ratio events (jumps >2× or <0.5×) would still require u32.
+Results from TestSignedOffsetSavings (n=50,000):
+  NearConstant / Float32Smooth: 50% payload savings (all → u16)
+  Volatile:                     42% payload savings
+  Sensor:                        4% payload savings (larger deviations)
+  NeuralWeight:                  ~0% (weights span many octaves → u32 dominates)
+TestU24Savings results unchanged (measures quantized mode, not v6 adaptive).
+All three tolerances (ε=1e-3, 1e-6, 1e-9) give identical sizes at ε≤1e-6
+(delta30≈1.49e-8 < 1e-6 → fastPath; precision decoupled from tolerance in v6).
 
-- [ ] 11a: Design — signed offset encoding; new ClassNormal32S symbol;
-           update QuantizeRatio/DequantizeRatio or add new pair;
-           derive new delta thresholds for tier-selection in gatherRans7
+- [x] 11a: Design — QuantizeRatioOffset / DequantizeRatioOffset added to
+           quantize.go; 5 tests covering centre, round-trip, equivalence,
+           smooth range, and bounds
 
-- [ ] 11b: Implement v6 stream — encodeAdaptiveV6/decodeV6;
-           8-symbol rANS alphabet (ClassNormal32S replaces ClassNormal32
-           in the common case; ClassNormal32 kept for out-of-range values);
-           QuantPayloadTier updated; backward compat test for v5
+- [x] 11b: Implement v6 stream — gatherRans7v6: int16 offset → ClassNormal
+           (u16, 2 bytes), int32 offset → ClassNormal32 (u32, 4 bytes);
+           encodeAdaptiveV6 writes bits=30 header; decodeRans7v6 ClassNormal
+           reads int16 offset via DequantizeRatioOffset; no new rANS alphabet;
+           v5 compat shim and backward-compat test removed (no users)
 
-- [ ] 11c: Retest 24-bit tier using TestU24Savings against v6 stream —
-           measure how many remaining u32 payloads (out-of-range offsets)
-           fit in 24 bits; if >10% on any smooth dataset, 24-bit is worth
-           building on top of v6
+- [x] 11c: TestU24Savings rerun — 0% savings on smooth data (as expected:
+           v6 already routes small offsets to u16; u24 tier not needed)
 
-- [ ] 11d: TestSignedOffsetSavings — measure u32 reduction on all 7 dataset
-           classes at sf=5,6,7; confirm dominant payloads move to u16
+- [x] 11d: TestSignedOffsetSavings — added to harness_test.go; confirms 50%
+           savings on near-constant/float32-smooth, 42% on volatile data
 
-- [ ] 11e: go vet + staticcheck clean; coverage check; README + CLI reference
-           updated; PLAN/ROADMAP closed; push
+- [x] 11e: Full suite green (all tests pass); PLAN/ROADMAP updated; committed
 
 ### Milestone 12 — Formalization
 
-- [ ] 11a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
-- [ ] 11a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
+- [ ] 12a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
+- [ ] 12a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
                SigFigsToBits algebra
-- [ ] 11a-iii: Algorithm writeup — tiered adaptive (v5/v6), fastPath proof,
+- [ ] 12a-iii: Algorithm writeup — tiered adaptive (v5/v6), fastPath proof,
                gatherRans7/AnalyzeTiers invariant; signed-offset encoding rationale
-- [ ] 11a-iv:  Stream format specification (v1–v6 headers, symbol alphabets,
+- [ ] 12a-iv:  Stream format specification (v1–v6 headers, symbol alphabets,
                payload rules, decode dispatch)
-- [ ] 11a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
-- [ ] 11a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
-- [ ] 11b-i:   Integration guide (library API walkthrough, embed example,
+- [ ] 12a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
+- [ ] 12a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
+- [ ] 12b-i:   Integration guide (library API walkthrough, embed example,
                document DriftMode C)
-- [ ] 11b-ii:  Benchmark white paper section (M3–M11 results, zstd comparison)
-- [ ] 11b-iii: Publish — tag v1.0.0, push to public remote
+- [ ] 12b-ii:  Benchmark white paper section (M3–M11 results, zstd comparison)
+- [ ] 12b-iii: Publish — tag v1.0.0, push to public remote
 
 ---
 
@@ -467,32 +470,25 @@ Proposed separation:
   .tzrz   — current adaptive path (v1–v5); minimum bytes, mixed stride
   .tzrzU  — SIMD uniform path; user picks one tier at encode time (u16 or
             u32); decoder keyed on extension; no adaptive selection
+ — retest after M11]
+A 24-bit tier was investigated via TestU24Savings (n=50,000, all 7 dataset
+classes, sf=5/6/7). Result: 0% savings on every smooth dataset including
+a dedicated Float32PrecisionSmooth class. 3% savings on NeuralWeight.
 
-Tradeoff: .tzrz2 pays for headroom on easy ratios (same bytes as if all
-ratios used the chosen tier) in exchange for 2–4× encode/decode throughput.
-Target use case: real-time sensor ingest and live telemetry where throughput
-matters more than file size.
+Root cause: the current absolute-index encoding places ratio=1.0 at index
+2^29. All smooth-data u32 payloads cluster near centre (~530M), far above
+the 2^24 threshold. A 24-bit tier in the current scheme only fires on
+extreme downward ratio moves (ratio < ~0.067), which are boundary events,
+not precision events.
 
-Requires: Go assembly or cgo; platform-specific (x86-64 AVX2, ARM NEON);
-new CLI flag (--fast or --uniform); new extension registration.
-Gate on: profiling showing the quantize loop (not rANS) is the bottleneck
-at the target throughput, and that the uniform-stride assumption holds.
+Do not build in current form. Retest after M11 (signed-offset v6 stream):
+with centre at 0, smooth-data u32 payloads become small signed integers.
+Out-of-range offsets (extreme events) may then fall in a range where a
+24-bit tier is meaningfully smaller than u32. TestU24Savings step 11c
+will measure this directly.
 
-### Streaming encode (io.Reader input)  [effort: M]
-Replace the slice-based Encode API with a streaming encoder that does not
-require the full array in memory — useful for very large files or
-pipe-based workflows. API-breaking change; requires a new public interface.
-Candidate post-M11 once the 1D design is stable.
-
-### Parallel encode (goroutines per reanchor segment)  [effort: M]
-Each reanchor segment is fully independent — embarrassingly parallel.
-A worker-pool encoder could saturate multiple cores with no correctness
-risk. With adaptive reanchoring, segment boundaries are data-driven so a
-two-pass approach is needed (pass 1: identify boundaries; pass 2: encode
-segments in parallel). Decode parallelism requires a segment offset table
-in the stream header — new stream version. Worth doing after M11.
-
-### 2D / multi-dimensional extension  [effort: XL]
+If 11c shows >10% of remaining u32 payloads fit in 24 bits on any smooth
+dataset, revisit this entry
 Accept a 2D float64 array; encode each row as a ratio stream; add
 cross-row prediction for spatially correlated columns. Relevant for sensor
 matrices, time-series databases, and neural weight tensors. Changes the

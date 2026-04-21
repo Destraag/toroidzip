@@ -310,3 +310,85 @@ func makeLogNormalRatios(n int, amplitude float64) []float64 {
 	}
 	return ratios
 }
+
+// --- QuantizeRatioOffset / DequantizeRatioOffset ---
+
+// TestQuantizeRatioOffsetCenter verifies ratio=1.0 maps to offset 0.
+func TestQuantizeRatioOffsetCenter(t *testing.T) {
+	for _, bits := range []int{1, 8, 16, 30} {
+		off := codec.QuantizeRatioOffset(1.0, bits)
+		if off != 0 {
+			t.Errorf("bits=%d: QuantizeRatioOffset(1.0) = %d, want 0", bits, off)
+		}
+	}
+}
+
+// TestQuantizeRatioOffsetRoundTrip verifies the offset round-trip recovers the
+// same ratio as the absolute round-trip at bits=30.
+func TestQuantizeRatioOffsetRoundTrip(t *testing.T) {
+	ratios := []float64{0.5, 0.9999, 1.0, 1.0001, 1.5, 2.0, 4.0, 1.0 / 16, 16.0}
+	for _, r := range ratios {
+		off := codec.QuantizeRatioOffset(r, 30)
+		got := codec.DequantizeRatioOffset(off, 30)
+		want := codec.DequantizeRatio(codec.QuantizeRatio(r, 30), 30)
+		if math.Abs(got-want) > 1e-15 {
+			t.Errorf("ratio=%g: offset round-trip=%g, absolute round-trip=%g, delta=%g",
+				r, got, want, math.Abs(got-want))
+		}
+	}
+}
+
+// TestQuantizeRatioOffsetEquivalence verifies that the offset encoding is
+// algebraically equivalent to the absolute encoding for all symbols at bits=16.
+func TestQuantizeRatioOffsetEquivalence(t *testing.T) {
+	bits := 16
+	levels := uint32(1) << bits
+	for sym := uint32(0); sym < levels; sym++ {
+		ratio := codec.DequantizeRatio(sym, bits)
+		off := codec.QuantizeRatioOffset(ratio, bits)
+		got := codec.DequantizeRatioOffset(off, bits)
+		want := codec.DequantizeRatio(sym, bits)
+		if math.Abs(got-want) > 1e-15 {
+			t.Errorf("sym=%d: DequantizeRatioOffset=%g, DequantizeRatio=%g", sym, got, want)
+		}
+	}
+}
+
+// TestQuantizeRatioOffsetSmoothRange verifies that typical smooth sensor-like
+// ratios (within ±0.01% of 1.0, i.e. ratio=1.0001) produce offsets that fit
+// in int16 at bits=30. This is the primary motivation for the v6 stream:
+// smooth-data ClassNormal32 payloads should cluster near 0 rather than near
+// 2^29, making most of them expressible as int16 instead of uint32.
+func TestQuantizeRatioOffsetSmoothRange(t *testing.T) {
+	const bits = 30
+	// Ratios within ±0.01% of 1.0 — typical smooth-data step size.
+	smoothRatios := []float64{
+		1.0 + 1e-4, 1.0 - 1e-4,
+		1.0 + 1e-5, 1.0 - 1e-5,
+	}
+	const int16Max = 1<<15 - 1
+	for _, r := range smoothRatios {
+		off := codec.QuantizeRatioOffset(r, bits)
+		if off > int16Max || off < -int16Max {
+			t.Errorf("ratio=%g: offset=%d exceeds int16 range ±%d", r, off, int16Max)
+		}
+	}
+}
+
+// TestQuantizeRatioOffsetRange verifies the offset range fits in int32 for
+// all valid bits and for the extreme symbols (0 and 2^bits-1).
+func TestQuantizeRatioOffsetRange(t *testing.T) {
+	for _, bits := range []int{1, 8, 16, 30} {
+		minRatio := codec.DequantizeRatio(0, bits)
+		maxRatio := codec.DequantizeRatio((uint32(1)<<bits)-1, bits)
+		minOff := codec.QuantizeRatioOffset(minRatio, bits)
+		maxOff := codec.QuantizeRatioOffset(maxRatio, bits)
+		centre := int32(1 << (bits - 1))
+		if minOff != -centre {
+			t.Errorf("bits=%d: min offset=%d, want %d", bits, minOff, -centre)
+		}
+		if maxOff != centre-1 {
+			t.Errorf("bits=%d: max offset=%d, want %d", bits, maxOff, centre-1)
+		}
+	}
+}

@@ -1166,14 +1166,14 @@ func TestAdaptiveV5SigFigsWiring(t *testing.T) {
 	}
 }
 
-// TestAdaptiveV5TiersUsed verifies that the tiered encoder actually uses
-// ClassNormal32 for ratios that are too fine for u16 but fit within u32.
-// We do this by checking that encode+decode with tol=1e-6 is noticeably more
-// accurate than with tol=1e-3 (u16 only), while still compressing.
+// TestAdaptiveV5TiersUsed verifies that the v6 offset-based u16 tier is
+// significantly more accurate than the v5 u16 tier at equivalent byte cost.
+// Smooth data (ratio ≈1.0001, off30≈19363 < int16Max) routes to ClassNormal (2 bytes)
+// at 30-bit precision. The reconstruction error should be far below v5's 16-bit error.
 func TestAdaptiveV5TiersUsed(t *testing.T) {
 	values := makeSmoothSeries(500, 20.0, 1.0001)
 
-	encode := func(tol float64) []float64 {
+	encode := func(tol float64) ([]float64, int) {
 		var buf bytes.Buffer
 		if err := codec.Encode(values, &buf, codec.EncodeOptions{
 			EntropyMode:   codec.EntropyAdaptive,
@@ -1186,25 +1186,31 @@ func TestAdaptiveV5TiersUsed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("decode(tol=%g): %v", tol, err)
 		}
-		return got
+		return got, buf.Len()
 	}
 
-	err16 := maxRelErr(encode(1e-3), values) // u16 tier dominates
-	err32 := maxRelErr(encode(1e-6), values) // u32 tier kicks in
-	if err32 >= err16 {
-		t.Errorf("u32-tier round (tol=1e-6, err=%e) not more accurate than u16-tier (tol=1e-3, err=%e)", err32, err16)
+	got16, _ := encode(1e-3)
+	got30, _ := encode(1e-6)
+	// v6 always uses 30-bit precision regardless of tolerance; both should be
+	// far more accurate than the old 16-bit absolute tier (error ∼2.7e-3).
+	const oldU16MaxErr = 2.8e-3 // analytical worst-case for 16-bit absolute
+	if e := maxRelErr(got16, values); e > oldU16MaxErr/100 {
+		t.Errorf("tol=1e-3 v6 error %e too large; expected <<16-bit bound %g", e, oldU16MaxErr)
+	}
+	if e := maxRelErr(got30, values); e > oldU16MaxErr/100 {
+		t.Errorf("tol=1e-6 v6 error %e too large; expected <<16-bit bound %g", e, oldU16MaxErr)
 	}
 }
 
 // TestAdaptiveV5BackwardCompatV4 confirms that v4-encoded streams are still
-// decodable after v5 was introduced.
+// decodable after v5/v6 were introduced.
 func TestAdaptiveV5BackwardCompatV4(t *testing.T) {
 	// We no longer produce v4 streams from encodeAdaptive, so we manually
 	// exercise decodeV4 by encoding via the internal path and checking the
 	// public Decode still routes correctly. Re-use the existing adaptive tests
-	// as a proxy — they all encode with v5 now; the key test here is that
+	// as a proxy — they all encode with v6 now; the key test here is that
 	// the version-4 constant still produces a valid decodable stream.
-	// We confirm the stream is now v5 by checking round-trip correctness.
+	// We confirm the stream is now v6 by checking round-trip correctness.
 	values := makeSmoothSeries(200, 10.0, 1.002)
 	var buf bytes.Buffer
 	if err := codec.Encode(values, &buf, codec.EncodeOptions{

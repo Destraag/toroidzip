@@ -462,15 +462,15 @@ func TestU24Savings(t *testing.T) {
 	const u24Limit = uint32(1 << 24)
 
 	type result struct {
-		dataset            string
-		sf                 int
-		totalRatios        int
-		u16Count           int
-		u32Count           int
-		u32FitsIn24        int // u32 payloads where index < 2^24
-		f64Count           int
-		bytesNow           int // bytes with current u16/u32/f64 tiers
-		bytesWith24        int // bytes if u32 payloads fitting in 24 bits used 3 bytes instead of 4
+		dataset     string
+		sf          int
+		totalRatios int
+		u16Count    int
+		u32Count    int
+		u32FitsIn24 int // u32 payloads where index < 2^24
+		f64Count    int
+		bytesNow    int // bytes with current u16/u32/f64 tiers
+		bytesWith24 int // bytes if u32 payloads fitting in 24 bits used 3 bytes instead of 4
 	}
 
 	var results []result
@@ -569,6 +569,117 @@ func TestU24Savings(t *testing.T) {
 		fmt.Printf("| %-14s | %3d | %8d | %8d | %8d | %8d | %7.1f%% | %7.2f%% |\n",
 			r.dataset, r.sf, r.totalRatios, r.u16Count, r.u32Count,
 			r.u32FitsIn24, pctFits, savingPct)
+	}
+	fmt.Println()
+}
+
+// TestSignedOffsetSavings measures how the v6 signed-offset routing distributes
+// ClassNormal ratios between the u16 (int16 offset, 2 bytes) and u32 (int32
+// offset, 4 bytes) tiers across all dataset classes and tolerances.
+//
+// It also computes the theoretical savings vs a hypothetical v5-style encoding
+// where all 30-bit ratios require 4 bytes (u32 absolute).
+//
+// Run with:
+//
+//	go test ./codec/... -run=TestSignedOffsetSavings -v -count=1
+func TestSignedOffsetSavings(t *testing.T) {
+	const n = 50_000
+	const bits30 = 30
+	const int16Max = (1 << 15) - 1
+
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(n)},
+		{"Financial", makeFinancialWalk(n)},
+		{"MultiScale", makeScientificMultiScale(n)},
+		{"Volatile", makeVolatileSeries(n)},
+		{"NearConstant", makeNearConstant(n)},
+		{"NeuralWeight", makeNeuralWeightProxy(n)},
+		{"Float32Smooth", makeFloat32PrecisionSmooth(n)},
+	}
+
+	levels30 := uint32(1) << bits30
+	delta30 := math.Pow(2, codec.QuantMaxLog2R/float64(levels30)) - 1
+
+	type result struct {
+		dataset  string
+		tol      float64
+		u16Count int // ClassNormal: int16 offset (2 bytes)
+		u32Count int // ClassNormal32: int32 offset (4 bytes)
+		f64Count int // ClassNormalExact: float64 (8 bytes)
+		bytesV6  int // v6 payload bytes
+		bytesV5  int // hypothetical v5: all 30-bit go to u32 (4 bytes each)
+		savingPct float64
+	}
+
+	tolerances := []float64{1e-3, 1e-6, 1e-9}
+	var results []result
+
+	for _, ds := range datasets {
+		for _, tol := range tolerances {
+			fastPath := tol > 0 && delta30 < tol
+			values := ds.data
+			prev := values[0]
+			var r result
+			r.dataset = ds.name
+			r.tol = tol
+
+			for i := 1; i < len(values); i++ {
+				ratio, class := codec.ComputeRatioExported(values[i], prev)
+				if class != codec.ClassNormal {
+					prev = values[i]
+					continue
+				}
+				if ratio == 0 {
+					r.f64Count++
+					r.bytesV6 += 8
+					r.bytesV5 += 8
+					prev = values[i]
+					continue
+				}
+
+				off30 := codec.QuantizeRatioOffset(ratio, bits30)
+				dequant30 := codec.DequantizeRatioOffset(off30, bits30)
+				withinTol := fastPath || delta30 < tol || math.Abs(dequant30/ratio-1.0) < tol
+
+				if !withinTol {
+					r.f64Count++
+					r.bytesV6 += 8
+					r.bytesV5 += 8
+				} else if off30 >= -(1<<15) && off30 <= int16Max {
+					r.u16Count++
+					r.bytesV6 += 2
+					r.bytesV5 += 4 // would have been u32 in v5
+				} else {
+					r.u32Count++
+					r.bytesV6 += 4
+					r.bytesV5 += 4
+				}
+				prev = values[i]
+			}
+			if r.bytesV5 > 0 {
+				r.savingPct = float64(r.bytesV5-r.bytesV6) / float64(r.bytesV5) * 100
+			}
+			results = append(results, r)
+		}
+	}
+
+	fmt.Printf("\n## Signed-Offset Savings Analysis — n=%d values\n\n", n)
+	fmt.Printf("Compares v6 payload bytes (u16=int16 offset / u32=int32 offset)\n")
+	fmt.Printf("vs hypothetical v5 (all 30-bit ratios stored as u32, 4 bytes).\n\n")
+	fmt.Printf("| %-14s | %6s | %8s | %8s | %8s | %8s | %8s | %9s |\n",
+		"Dataset", "tol", "u16", "u32", "f64", "bytesV6", "bytesV5", "saving%")
+	fmt.Printf("|%s|%s|%s|%s|%s|%s|%s|%s|\n",
+		"---------------:", "-------:", "---------:", "---------:",
+		"---------:", "---------:", "---------:", "----------:")
+
+	for _, r := range results {
+		fmt.Printf("| %-14s | %6.0e | %8d | %8d | %8d | %8d | %8d | %8.1f%% |\n",
+			r.dataset, r.tol, r.u16Count, r.u32Count, r.f64Count,
+			r.bytesV6, r.bytesV5, r.savingPct)
 	}
 	fmt.Println()
 }

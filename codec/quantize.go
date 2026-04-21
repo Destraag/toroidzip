@@ -65,6 +65,35 @@ func DequantizeRatio(sym uint32, bits int) float64 {
 	return math.Pow(2, logR)
 }
 
+// QuantizeRatioOffset maps a ClassNormal ratio to a signed offset from the
+// centre of the bits-bit log-space range. Equivalent to:
+//
+//	int32(QuantizeRatio(ratio, bits)) - (1 << (bits-1))
+//
+// ratio=1.0 maps to offset 0. A smooth Sensor step (ratio ≈ 1.0001) maps to
+// offset ≈ 18,408 at bits=30 — far smaller than the absolute index ≈ 536M
+// produced by QuantizeRatio. The output range is [−2^(bits-1), 2^(bits-1))
+// which fits in int32 for all valid bits ∈ [1, 30].
+//
+// This encoding is used in the v6 stream for ClassNormal32 payloads: storing
+// the deviation from identity (ratio=1.0) rather than the absolute position
+// in log-space means smooth-data values cluster near zero and can be coded
+// in fewer bytes at full 30-bit precision.
+func QuantizeRatioOffset(ratio float64, bits int) int32 {
+	bits = clampBits(bits)
+	sym := QuantizeRatio(ratio, bits)
+	return int32(sym) - int32(1<<(bits-1))
+}
+
+// DequantizeRatioOffset inverts QuantizeRatioOffset. offset must have been
+// produced by QuantizeRatioOffset with the same bits value. The result is
+// identical to DequantizeRatio(uint32(int32(1<<(bits-1))+offset), bits).
+func DequantizeRatioOffset(offset int32, bits int) float64 {
+	bits = clampBits(bits)
+	sym := uint32(int32(1<<(bits-1)) + offset)
+	return DequantizeRatio(sym, bits)
+}
+
 // PrecisionReport is returned by AnalyzePrecision.
 type PrecisionReport struct {
 	// Entropy[b] is the Shannon entropy (bits/symbol) of the quantised symbol
