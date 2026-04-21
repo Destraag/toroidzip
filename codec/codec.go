@@ -82,8 +82,8 @@ const (
 	versionAdaptive    byte = 4 // EntropyAdaptive v4 (superseded; still decoded)
 	versionAdaptiveV5  byte = 5 // EntropyAdaptive v5 (tiered: u16 / u32 / float64; superseded; still decoded)
 	versionAdaptiveV6  byte = 6 // EntropyAdaptive v6 (tiered: u16 / int32-offset / float64)
-	versionQuantizedV2  byte = 7 // EntropyQuantized v4 (offset-based tiers: u8/u16/u24/u32)
-	versionAdaptiveV7   byte = 8 // EntropyAdaptive v7 (precision-relative tiers: u8/u16/u24/u32)
+	versionQuantizedV2 byte = 7 // EntropyQuantized v4 (offset-based tiers: u8/u16/u24/u32)
+	versionAdaptiveV7  byte = 8 // EntropyAdaptive v7 (precision-relative tiers: u8/u16/u24/u32)
 )
 
 // Encode compresses values into the ToroidZip format and writes to w.
@@ -980,7 +980,7 @@ func encodeAdaptive(values []float64, w io.Writer, opts EncodeOptions) error {
 // DequantizeRatioOffset, not an absolute uint16 symbol as in v5.
 // This allows smooth-data ratios (ratio ≈ 1.0, small offset) to use 2 bytes
 // at full 30-bit precision instead of 4 bytes.
-func gatherRans7v6(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
+func gatherRans7v6(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) { //nolint:unused // retained for reference; superseded by gatherRans7v7
 	ri, dm := opts.ReanchorInterval, opts.DriftMode
 	tol := opts.Tolerance
 
@@ -1257,7 +1257,7 @@ func gatherRans7v7(values []float64, opts EncodeOptions) (classes []byte, payloa
 // When opts.AdaptiveReanchor is true, a ClassReanchor is emitted whenever the
 // quantized reconstruction of a value would exceed opts.EndToEndTolerance.
 // opts.ReanchorInterval remains a safety cap that also triggers reanchors.
-func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) {
+func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads []byte) { //nolint:unused // retained for reference; superseded by gatherRans7v7
 	ri, dm := opts.ReanchorInterval, opts.DriftMode
 	bits := opts.PrecisionBits
 	if bits <= 0 || bits > 16 {
@@ -1390,7 +1390,7 @@ func gatherRans7(values []float64, opts EncodeOptions) (classes []byte, payloads
 }
 
 // writeRansBody7 writes ransFreqs7(28) + ransLen(4) + ransStream + payloads.
-func writeRansBody7(w io.Writer, classes []byte, freqs RansFreqs7, payloads []byte) error {
+func writeRansBody7(w io.Writer, classes []byte, freqs RansFreqs7, payloads []byte) error { //nolint:unused // retained for reference; superseded by writeRansBody7v7
 	for _, f := range freqs {
 		if err := writeUint32(w, f); err != nil {
 			return err
@@ -1489,7 +1489,7 @@ func encodeAdaptiveV7(values []float64, w io.Writer, opts EncodeOptions) error {
 //
 // Body: [ransLen(4)][ransStream][anchor float64][per-event payloads].
 // ClassNormal payload: uint16. ClassNormal32 payload: uint32. ClassNormalExact: float64.
-func encodeAdaptiveV5(values []float64, w io.Writer, opts EncodeOptions) error {
+func encodeAdaptiveV5(values []float64, w io.Writer, opts EncodeOptions) error { //nolint:unused // retained for reference; superseded by encodeAdaptiveV7
 	bits := opts.PrecisionBits
 	if bits <= 0 || bits > 16 {
 		bits = 16
