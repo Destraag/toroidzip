@@ -151,7 +151,7 @@ func TestAdaptiveReanchorSparse(t *testing.T) {
 
 // TestSigFigsEndToEndGuarantee verifies that --sig-figs N parameters (when
 // applied via EncodeOptions) guarantee N significant decimal figures in every
-// reconstructed value for N = 3, 4, 5, 6.
+// reconstructed value for N = 3 through 9 (the full supported range).
 //
 // The test uses a 10,000-value smooth sequence.  Each value is checked against
 // the corresponding original; the maximum relative error must not exceed
@@ -166,7 +166,7 @@ func TestSigFigsEndToEndGuarantee(t *testing.T) {
 		values[i] = v
 	}
 
-	for _, sigFigs := range []int{3, 4, 5, 6} {
+	for _, sigFigs := range []int{3, 4, 5, 6, 7, 8, 9} {
 		sigFigs := sigFigs
 		t.Run(fmt.Sprintf("N=%d", sigFigs), func(t *testing.T) {
 			endToEndTol := codec.SigFigsToTolerance(sigFigs)
