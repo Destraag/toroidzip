@@ -1011,28 +1011,35 @@ func TestAdaptiveDefaultPrecisionBits(t *testing.T) {
 	}
 }
 
-// TestAdaptivePrecisionBitsCapped verifies PrecisionBits>16 is capped to 16.
+// TestAdaptivePrecisionBitsCapped verifies PrecisionBits is used as-is in v7 —
+// not capped to 16 as in v5. Higher PrecisionBits → larger stream but better accuracy.
 func TestAdaptivePrecisionBitsCapped(t *testing.T) {
 	values := makeSmoothSeries(200, 5.0, 1.001)
-	var bufCapped, buf16 bytes.Buffer
-	if err := codec.Encode(values, &bufCapped, codec.EncodeOptions{
-		EntropyMode:   codec.EntropyAdaptive,
-		PrecisionBits: 24, // >16, should be capped to 16
-		Tolerance:     1e-3,
-	}); err != nil {
-		t.Fatalf("encode capped: %v", err)
+	encode := func(bits int) ([]float64, *bytes.Buffer) {
+		var buf bytes.Buffer
+		if err := codec.Encode(values, &buf, codec.EncodeOptions{
+			EntropyMode:   codec.EntropyAdaptive,
+			PrecisionBits: bits,
+			Tolerance:     1e-3,
+		}); err != nil {
+			t.Fatalf("encode bits=%d: %v", bits, err)
+		}
+		got, err := codec.Decode(bytes.NewReader(buf.Bytes()))
+		if err != nil {
+			t.Fatalf("decode bits=%d: %v", bits, err)
+		}
+		return got, &buf
 	}
-	if err := codec.Encode(values, &buf16, codec.EncodeOptions{
-		EntropyMode:   codec.EntropyAdaptive,
-		PrecisionBits: 16,
-		Tolerance:     1e-3,
-	}); err != nil {
-		t.Fatalf("encode 16: %v", err)
+	got24, buf24 := encode(24)
+	got16, buf16 := encode(16)
+	// v7: different precision → different byte streams.
+	if bytes.Equal(buf24.Bytes(), buf16.Bytes()) {
+		t.Errorf("PrecisionBits=24 and PrecisionBits=16 produced identical streams; expected different")
 	}
-	// Both must produce identical streams (capped to the same precision).
-	if !bytes.Equal(bufCapped.Bytes(), buf16.Bytes()) {
-		t.Errorf("PrecisionBits=24 and PrecisionBits=16 produced different streams (%d vs %d bytes)",
-			bufCapped.Len(), buf16.Len())
+	// v7: higher precision → smaller reconstruction error.
+	e24, e16 := maxRelErr(got24, values), maxRelErr(got16, values)
+	if e24 >= e16 {
+		t.Errorf("PrecisionBits=24 error %e not smaller than PrecisionBits=16 error %e", e24, e16)
 	}
 }
 
@@ -1166,39 +1173,43 @@ func TestAdaptiveV5SigFigsWiring(t *testing.T) {
 	}
 }
 
-// TestAdaptiveV5TiersUsed verifies that the v6 offset-based u16 tier is
-// significantly more accurate than the v5 u16 tier at equivalent byte cost.
-// Smooth data (ratio ≈1.0001, off30≈19363 < int16Max) routes to ClassNormal (2 bytes)
-// at 30-bit precision. The reconstruction error should be far below v5's 16-bit error.
+// TestAdaptiveV5TiersUsed verifies that v7 accuracy scales with PrecisionBits:
+// B=16 is bounded by 16-bit quantization error; B=30 by 30-bit quantization error.
+// This replaces the old v6 invariant (always 30-bit regardless of PrecisionBits).
 func TestAdaptiveV5TiersUsed(t *testing.T) {
 	values := makeSmoothSeries(500, 20.0, 1.0001)
 
-	encode := func(tol float64) ([]float64, int) {
+	encode := func(bits int, tol float64) []float64 {
 		var buf bytes.Buffer
 		if err := codec.Encode(values, &buf, codec.EncodeOptions{
 			EntropyMode:   codec.EntropyAdaptive,
-			PrecisionBits: 16,
+			PrecisionBits: bits,
 			Tolerance:     tol,
 		}); err != nil {
-			t.Fatalf("encode(tol=%g): %v", tol, err)
+			t.Fatalf("encode(bits=%d,tol=%g): %v", bits, tol, err)
 		}
 		got, err := codec.Decode(&buf)
 		if err != nil {
-			t.Fatalf("decode(tol=%g): %v", tol, err)
+			t.Fatalf("decode(bits=%d,tol=%g): %v", bits, tol, err)
 		}
-		return got, buf.Len()
+		return got
 	}
 
-	got16, _ := encode(1e-3)
-	got30, _ := encode(1e-6)
-	// v6 always uses 30-bit precision regardless of tolerance; both should be
-	// far more accurate than the old 16-bit absolute tier (error ∼2.7e-3).
-	const oldU16MaxErr = 2.8e-3 // analytical worst-case for 16-bit absolute
-	if e := maxRelErr(got16, values); e > oldU16MaxErr/100 {
-		t.Errorf("tol=1e-3 v6 error %e too large; expected <<16-bit bound %g", e, oldU16MaxErr)
+	// B=16: per-ratio error bounded by ε_max(16) ≈ 4.2e-5; use 5e-5 as safe bound.
+	const bits16Bound = 5e-5
+	got16 := encode(16, 1e-3)
+	if e := maxRelErr(got16, values); e > bits16Bound {
+		t.Errorf("B=16 error %e exceeds 16-bit bound %g", e, bits16Bound)
 	}
-	if e := maxRelErr(got30, values); e > oldU16MaxErr/100 {
-		t.Errorf("tol=1e-6 v6 error %e too large; expected <<16-bit bound %g", e, oldU16MaxErr)
+	// B=30: per-ratio error bounded by ε_max(30) ≈ 3.7e-9; use 5e-9 as safe bound.
+	const bits30Bound = 5e-9
+	got30 := encode(30, 1e-6)
+	if e := maxRelErr(got30, values); e > bits30Bound {
+		t.Errorf("B=30 error %e exceeds 30-bit bound %g", e, bits30Bound)
+	}
+	// Higher precision → smaller error.
+	if e16, e30 := maxRelErr(got16, values), maxRelErr(got30, values); e30 >= e16 {
+		t.Errorf("B=30 error %e not smaller than B=16 error %e", e30, e16)
 	}
 }
 

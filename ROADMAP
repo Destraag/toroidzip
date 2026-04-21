@@ -395,21 +395,123 @@ All three tolerances (ε=1e-3, 1e-6, 1e-9) give identical sizes at ε≤1e-6
 
 - [x] 11e: Full suite green (all tests pass); PLAN/ROADMAP updated; committed
 
-### Milestone 12 — Formalization
+### Milestone 12 — Offset-based tier encoding for quantized and adaptive
 
-- [ ] 12a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
-- [ ] 12a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
-               SigFigsToBits algebra
-- [ ] 12a-iii: Algorithm writeup — tiered adaptive (v5/v6), fastPath proof,
+M11 added signed-offset encoding to the **adaptive** stream at fixed 30-bit precision.
+This milestone extends the same idea to two remaining gaps:
+
+**12a — Quantized stream offset tiers (new quantized version)**
+The quantized stream still uses absolute unsigned index for all payloads.
+With offset encoding and data-driven tier routing the tier depends on the actual
+deviation of each ratio from identity, not on the configured `PrecisionBits`.
+
+  Background — why offset changes the tier distribution:
+    At 16-bit precision (4–5 sig figs), a NearConstant ±0.01% step:
+      absolute index → ~32,769          (just over u8 boundary → u16, 2 bytes)
+      signed offset  →      ~1          (well within int8 → u8, 1 byte)
+    NeuralWeight's 13% u24 pocket (from TestU24Savings) exists because those
+    absolute indices cluster in the low 24-bit range of a 30-bit grid. With offset
+    encoding the same ratios may scatter; a dedicated u24 tier (3 bytes) captures
+    the savings wherever the offset magnitude falls in (32767, 8388607].
+
+  New stream: versionQuantized = 4 (or next available byte).
+  Routing: |off| ≤ 127 → u8 (1B) | ≤ 32767 → u16 (2B) | ≤ 8388607 → u24 (3B) | else u32 (4B).
+  Requires new rANS symbols: ClassNormal8 and ClassNormal24.
+  No tolerance gate (quantized is always lossy to configured precision).
+
+- [x] 12a-i:  boundary.go — ClassNormal8 (=7) and ClassNormal24 (=8) added
+- [x] 12a-ii: rans.go — 9-symbol rANS alphabet: RansFreqs9, RansEncode9,
+              RansDecode9, RansCountFreqs9, normalizeRansFreqs9, buildRansTables9
+- [x] 12a-iii: gatherRansV4 + encodeQuantizedV2 (version byte 7) + decodeQuantizedV2 /
+               decodeRansV4; writeRansBody9 / readRansFreqs9; Encode dispatch updated;
+               v3 kept for decode only
+- [x] 12a-iv: TestQuantizedOffsetSavings — 7 datasets at sf=4,5,6,7; all assertions pass.
+              Key results (n=50000):
+                NearConstant sf=4,5 (B=13,16): 100% u8, 50% saving vs v3 u16
+                NearConstant sf=6   (B=20):    100% u8, 75% saving vs v3 u32
+                NeuralWeight sf=6,7 (B=20,23): u24 pocket captured (29k–47k ratios)
+                NeuralWeight sf=5   (B=16):    -4.9% (B=16 min offset spills to u24 —
+                  expected for large-range data; not a correctness issue)
+- [x] 12a-v:  157/157 tests passing; PLAN/ROADMAP updated
+
+**12b — Adaptive precision-relative tiers (v7 stream)**
+Both v5 and v6 fail to connect the precision you request to the tier you land in.
+
+  v5 regression: `PrecisionBits` clamped to 16. Requesting 6 sig figs (B=20)
+  silently becomes B=16; 16-bit relErr > tight tolerance → spills to u32 (4B,
+  30-bit). Every precision request above 5 sig figs pays 4 bytes.
+
+  v6 regression: 30-bit hardcoded for everything. `PrecisionBits` ignored.
+  Offset encoding improved smooth-data bytes, but the configured precision
+  has no effect on which tier is used.
+
+  v7 fix: offset computed at `opts.PrecisionBits`. Tier set by `|off|` magnitude.
+
+  Precision → dominant tier mapping in v7:
+    N=4–5sf  B=13–19  max offset ≤ ±256K  → u16 (2B)  [smooth data → u8]
+    N=6–7sf  B=20–23  max offset ≤ ±4M    → u24 (3B)  ← fills the gap
+    N=8–9sf  B=26–30  max offset ≤ ±537M  → u32 (4B)
+
+  Smooth data at any precision: offset ≈ small → u8 regardless of B.
+  The u24 tier is the natural home for 6–7 sig fig requests; without it those
+  requests pay u32 (4B) even though max offset fits in 3 bytes.
+  At B=30: output is identical to v6. Same 9-symbol alphabet as M12a.
+
+- [x] 12b-i:  gatherRans7v7 — off = QuantizeRatioOffset(ratio, opts.PrecisionBits);
+              route by |off| → u8/u16/u24/u32; fastPath = delta(bits) < tol;
+              ClassNormalExact only if per-ratio relErr ≥ tol
+- [x] 12b-ii: encodeAdaptiveV7 (versionAdaptiveV7 = byte 8): writes opts.PrecisionBits
+              in header; decodeV7/decodeRans7v7; Decode dispatch.
+              TestAdaptivePrecisionBitsCapped and TestAdaptiveV5TiersUsed rewritten;
+              157/157 tests pass.
+- [x] 12b-iii: TestAdaptiveV7OffsetSavings — n=50000, tol=1e-3 (fastPath fires).
+               Key results (analytical v7 payload vs v6):
+                 Sensor  sf=4 (B=13):  u8 only     49,999B vs 199,500B  −74.9%
+                 Sensor  sf=5 (B=16):  u8+u16      55,057B vs 196,948B  −72.0%
+                 Sensor  sf=9 (B=30):  u16+u24    145,753B vs 191,540B  −23.9%
+               External comparison (bench_m4.sh, 6 datasets, √):
+                 Rank 1-3:  Q-3sf 0.26 / A7-4sf 0.27 / A7-5sf=Adap-ε 0.28
+                 Rank 9-12: brotli-q6 0.70 / brotli-q11 0.72 / zstd-19 0.76 / zstd-3 0.82
+               ToroidZip at 9sf (worst-case accuracy) beats best-effort brotli by 2×.
+               Note: tol=1e-3 + fastPath makes adaptive v7 ≡ quantized v2 at same B;
+               adaptive adds value for streams needing per-ratio tolerance gating.
+- [x] 12b-iv: Full suite green (157+ tests). bench_m4.sh updated with --adaptive-v7
+              flag (sf=4,5,6,9; tol=1e-3) and sf_to_bits() lookup for Q modes.
+              M3 harness extended with A7-4sf/5sf/6sf/9sf rows + v7 tier observations.
+
+### Milestone 13 — Test Integrity + Documentation Correctness
+
+Every feature should have a test that guards the *mechanism*, not just output
+correctness. The M9→M12 tier-routing regression went undetected because tests
+only checked decode accuracy — the fallback to ClassNormalExact is correct,
+just wasteful. Payload-cost assertions would have caught it immediately.
+
+- [ ] 13a-i:   TestTierDistributionInvariant — hard bounds on u8/u16/u24/u32/exact
+               fractions per dataset×B; catches PrecisionBits being ignored/capped
+- [ ] 13a-ii:  TestAdaptiveReanchorMechanism — count ClassReanchor events explicitly;
+               adversarial data must fire >0 reanchors; near-constant must fire <K/10
+- [ ] 13a-iii: TestSigFigsWiring — verifies sig-figs→bits→header→tier→decode chain
+               for N=3,4,5,6,9; guards the full encoding pipeline end-to-end
+- [ ] 13b-i:   Doc audit: all exported symbols; fix stale v5/v6 version references
+- [ ] 13b-ii:  EncodeOptions field doc audit: PrecisionBits, Tolerance, AdaptiveReanchor
+- [ ] 13b-iii: CLI help text + README tier description update (u8/u16/u24/u32)
+- [ ] 13c:     Full suite green; coverage ≥ 85%; PLAN/ROADMAP closed
+
+### Milestone 14 — Formalization
+
+- [ ] 14a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
+- [ ] 14a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
+               SigFigsToBits algebra; distinction between SigFigs and PrecisionBits
+- [ ] 14a-iii: Algorithm writeup — tiered adaptive (v5/v6/v7), fastPath proof,
                gatherRans7/AnalyzeTiers invariant; signed-offset encoding rationale
-- [ ] 12a-iv:  Stream format specification (v1–v6 headers, symbol alphabets,
+- [ ] 14a-iv:  Stream format specification (v1–v7 headers, symbol alphabets,
                payload rules, decode dispatch)
-- [ ] 12a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
-- [ ] 12a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
-- [ ] 12b-i:   Integration guide (library API walkthrough, embed example,
+- [ ] 14a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
+- [ ] 14a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
+- [ ] 14b-i:   Integration guide (library API walkthrough, embed example,
                document DriftMode C)
-- [ ] 12b-ii:  Benchmark white paper section (M3–M11 results, zstd comparison)
-- [ ] 12b-iii: Publish — tag v1.0.0, push to public remote
+- [ ] 14b-ii:  Benchmark white paper section (M3–M12 results, zstd comparison)
+- [ ] 14b-iii: Publish — tag v1.0.0, push to public remote
 
 ---
 

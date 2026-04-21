@@ -31,18 +31,30 @@ const (
 	// anchor used to reset reconstruction and bound cumulative drift.
 	ClassReanchor
 
-	// ClassNormalExact is used only in the v4 adaptive stream (EntropyAdaptive).
-	// It signals that the ratio could not be quantized within the declared
-	// tolerance ε and is stored as a full float64 payload instead. This class
-	// never appears in v1–v3 streams and is not produced by Classify.
+	// ClassNormalExact signals that a ratio is stored verbatim as a float64
+	// payload. Fires when the per-ratio error check fails (Tolerance > 0 and
+	// the quantized value exceeds tolerance) or when ratio == 0.
+	// Used in the EntropyAdaptive stream (v4+). Not produced by Classify.
 	ClassNormalExact
 
-	// ClassNormal32 is used only in the v5 adaptive stream (EntropyAdaptive).
-	// It signals that the ratio passed the ε check at 30-bit precision but
-	// not at 16-bit precision, and is stored as a uint32 quantized symbol.
-	// The decoder reads a 4-byte payload and reconstructs via DequantizeRatio.
-	// This class never appears in v1–v4 streams and is not produced by Classify.
+	// ClassNormal32 signals a ClassNormal ratio stored as a signed int32 offset
+	// from log-space centre at configured precision. |offset| > 8,388,607.
+	// Payload: 4 bytes (int32, little-endian). Decoded via DequantizeRatioOffset(off, bits).
+	// Used in EntropyAdaptive v5 (absolute uint32) and v6/v7 (signed offset).
+	// Not produced by Classify.
 	ClassNormal32
+
+	// ClassNormal8 is used in the v4-quantized and v7-adaptive offset streams.
+	// It signals a ClassNormal ratio stored as a signed int8 offset from the
+	// log-space centre at configured precision. |offset| ≤ 127.
+	// Payload: 1 byte (int8). Decoded via DequantizeRatioOffset(off, bits).
+	ClassNormal8
+
+	// ClassNormal24 is used in the v4-quantized and v7-adaptive offset streams.
+	// It signals a ClassNormal ratio stored as a signed int24 offset from the
+	// log-space centre at configured precision. |offset| ≤ 8,388,607.
+	// Payload: 3 bytes (int24, little-endian signed). Decoded via DequantizeRatioOffset(off, bits).
+	ClassNormal24
 )
 
 // Thresholds for boundary classification. These are tunable.
@@ -100,18 +112,20 @@ const (
 	// Use AnalyzePrecision to find the recommended precision for a data set.
 	EntropyQuantized
 
-	// EntropyAdaptive is the v5 hybrid stream. For each ClassNormal ratio,
-	// the encoder checks quantization error against tolerance ε at two precision
-	// levels, storing the ratio in the smallest tier that satisfies the bound:
-	//   - error < ε at 16 bits  → ClassNormal   + uint16 (2 bytes)
-	//   - error < ε at 30 bits  → ClassNormal32 + uint32 (4 bytes)
-	//   - error ≥ ε at 30 bits  → ClassNormalExact + float64 (8 bytes)
-	// The class stream uses a 7-symbol rANS alphabet.
-	// At ε=0 (default Tolerance): output is bit-identical to EntropyLossless.
-	// At ε=∞: output matches EntropyQuantized at bits≤16.
-	// Set EncodeOptions.Tolerance to control ε (e.g. 1e-4 ≈ 4 sig-fig loss bound).
-	// Set EncodeOptions.PrecisionBits for the quantized symbols (capped at 16 for
-	// the fast path; the 30-bit mid tier is always tried before float64 fallback).
+	// EntropyAdaptive is the current adaptive stream (v7). Each ClassNormal ratio
+	// is quantized at EncodeOptions.PrecisionBits (default: DefaultPrecisionBits=16)
+	// using signed log-space offsets, then stored in the smallest payload tier
+	// that fits the offset magnitude:
+	//   - |offset| ≤ 127       → ClassNormal8  + int8  (1 byte)
+	//   - |offset| ≤ 32,767    → ClassNormal   + int16 (2 bytes)
+	//   - |offset| ≤ 8,388,607 → ClassNormal24 + int24 (3 bytes)
+	//   - |offset| > 8,388,607 → ClassNormal32 + int32 (4 bytes)
+	//   - ratio == 0 or tol check fails → ClassNormalExact + float64 (8 bytes)
+	// The class stream uses a 9-symbol rANS alphabet.
+	// Accuracy is controlled by PrecisionBits: use SigFigsToBits(N) for N sig figs.
+	// Set Tolerance = math.MaxFloat64 to quantize all normals at PrecisionBits.
+	// Set Tolerance = SigFigsToTolerance(N) for per-ratio error gating.
+	// At Tolerance=0 (default): all normals take ClassNormalExact — lossless-equivalent.
 	EntropyAdaptive
 )
 

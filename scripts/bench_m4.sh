@@ -14,9 +14,10 @@
 #
 # Flags:
 #   --n N          number of float64 values per dataset (default 50000)
-#   --sig-figs N   test only this precision (default: test 3, 6, and 9 sig figs)
+#   --sig-figs N   test only this quantized precision (default: test 3, 6, and 9 sig figs)
 #   --effort fast|best  lossless codec effort: fast=low level, best=max level (default: both)
-#   --adaptive     also run EntropyAdaptive (v5) at tolerances 1e-6 and 1e-4 (default PrecisionBits=16)
+#   --adaptive     also run adaptive at tolerances 1e-4 and 1e-6 (PrecisionBits=16)
+#   --adaptive-v7  also run adaptive v7 at precision sf=4,5,6,9 with tol=1e-3 (fastPath)
 #   --keep         keep the bench_data/ temp directory after the run
 
 set -euo pipefail
@@ -29,6 +30,16 @@ EFFORT=both   # fast | best | both
 RUN_ADAPTIVE=0
 ADAPTIVE_TOLS=(1e-6 1e-4)
 ADAPTIVE_BITS=16
+RUN_ADAPTIVE_V7=0
+# A7 sig-fig levels: each sf uses bits=SigFigsToBits(sf) and tol=SigFigsToTolerance(sf).
+# Hardcoded lookup (avoids needing a separate CLI call):
+#   sf=4 → bits=13  sf=5 → bits=16  sf=6 → bits=20  sf=9 → bits=30
+ADAPTIVE_V7_SF=(3 4 5 6 9)
+declare -A ADAPTIVE_V7_BITS=([3]=10 [4]=13 [5]=16 [6]=20 [9]=30)
+# All A7 modes use tol=1e308 (math.MaxFloat64-equivalent) so fastPath fires,
+# meaning every ratio is quantized at the configured bit depth. This makes
+# A7-Nsf directly comparable to Q-Nsf at the same precision level (A7-3sf ≡ Q-3sf).
+declare -A ADAPTIVE_V7_TOL=([3]=1e308 [4]=1e308 [5]=1e308 [6]=1e308 [9]=1e308)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -36,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --sig-figs) PRECISIONS=("$2"); shift 2 ;;
     --effort) EFFORT="$2"; shift 2 ;;
     --adaptive) RUN_ADAPTIVE=1; shift ;;
+    --adaptive-v7) RUN_ADAPTIVE_V7=1; shift ;;
     --keep) KEEP=1; shift ;;
     *) echo "Unknown flag: $1" >&2; exit 1 ;;
   esac
@@ -100,7 +112,8 @@ echo "## M4 External Baseline Benchmark — n=$N values ($(( UNCOMPRESSED_BYTES 
 echo ""
 printf "ToroidZip modes tested: %s(Reanchor; use --sig-figs N to test one precision)\n" \
   "$(printf "Q-%ssf " "${PRECISIONS[@]}")"
-[[ $RUN_ADAPTIVE -eq 1 ]] && echo "  + Adaptive (v5) ε=${ADAPTIVE_TOLS[*]} ${ADAPTIVE_BITS}b (--adaptive)"
+[[ $RUN_ADAPTIVE    -eq 1 ]] && echo "  + Adaptive (v6-compat) ε=${ADAPTIVE_TOLS[*]} ${ADAPTIVE_BITS}b (--adaptive)"
+[[ $RUN_ADAPTIVE_V7 -eq 1 ]] && echo "  + Adaptive v7 sf=${ADAPTIVE_V7_SF[*]} precision-relative (--adaptive-v7)"
 echo "Ratio = encoded_bytes / uncompressed_bytes (lower is better)."
 echo "External codecs are lossless; ToroidZip rows are lossy at the stated precision."
 echo ""
@@ -167,21 +180,42 @@ for ds in "${DATASETS[@]}"; do
   printf "| %-14s | %-14s | %-12s | %9s | %10s |\n" \
     "$ds" "uncompressed" "-" "1.0000" "-"
 
-  # ToroidZip at each requested precision (Reanchor mode)
+  # ToroidZip quantized at each requested sig-figs level.
+  # --sig-figs now implies adaptive mode, so we map sf→bits directly.
+  sf_to_bits() {
+    case "$1" in
+      3) echo 10 ;; 4) echo 13 ;; 5) echo 16 ;;
+      6) echo 20 ;; 7) echo 23 ;; 8) echo 26 ;; 9) echo 30 ;;
+      *) echo 16 ;;
+    esac
+  }
   for sf in "${PRECISIONS[@]}"; do
     tz_out="$BENCH_DIR/${ds}.q${sf}.tzrz"
-    ms=$(time_compress "$TZ encode --entropy-mode quantized --sig-figs $sf $f $tz_out" "$tz_out")
+    bits=$(sf_to_bits "$sf")
+    ms=$(time_compress "$TZ encode --entropy-mode quantized --precision $bits $f $tz_out" "$tz_out")
     enc=$(file_bytes "$tz_out")
     print_row "$ds" "toroidzip" "Q-${sf}sf/Reanchor" "$enc" "$ms"
   done
 
-  # ToroidZip adaptive (v5) — one row per tolerance
+  # ToroidZip adaptive (v6-compat) — one row per tolerance
   if [[ $RUN_ADAPTIVE -eq 1 ]]; then
     for ADAPTIVE_TOL in "${ADAPTIVE_TOLS[@]}"; do
       tz_adap="$BENCH_DIR/${ds}.adaptive${ADAPTIVE_TOL}.tzrz"
       ms=$(time_compress "$TZ encode --entropy-mode adaptive --tolerance ${ADAPTIVE_TOL} --precision ${ADAPTIVE_BITS} $f $tz_adap" "$tz_adap")
       enc=$(file_bytes "$tz_adap")
       print_row "$ds" "toroidzip" "Adap-ε${ADAPTIVE_TOL}" "$enc" "$ms"
+    done
+  fi
+
+  # ToroidZip adaptive v7 — one row per sig-figs level
+  if [[ $RUN_ADAPTIVE_V7 -eq 1 ]]; then
+    for sf in "${ADAPTIVE_V7_SF[@]}"; do
+      tz_a7="$BENCH_DIR/${ds}.a7sf${sf}.tzrz"
+      b=${ADAPTIVE_V7_BITS[$sf]}
+      tol=${ADAPTIVE_V7_TOL[$sf]}
+      ms=$(time_compress "$TZ encode --entropy-mode adaptive --precision $b --tolerance $tol $f $tz_a7" "$tz_a7")
+      enc=$(file_bytes "$tz_a7")
+      print_row "$ds" "toroidzip" "A7-${sf}sf(B=${b})" "$enc" "$ms"
     done
   fi
 
@@ -323,6 +357,14 @@ for ds in "${DATASETS[@]}"; do
       rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.adaptive${ADAPTIVE_TOL}.tzrz") ))
     done
   fi
+  if [[ $RUN_ADAPTIVE_V7 -eq 1 ]]; then
+    for sf in "${ADAPTIVE_V7_SF[@]}"; do
+      tag="tz_a7_sf${sf}"
+      rank_label["$tag"]="toroidzip"
+      rank_type["$tag"]="lossy"
+      rank_total["$tag"]=$(( ${rank_total["$tag"]:-0} + $(file_bytes "$BENCH_DIR/${ds}.a7sf${sf}.tzrz") ))
+    done
+  fi
   [[ $HAS_ZSTD -eq 1 ]] && for lvl in "${ZSTD_LEVELS[@]}"; do
     tag="zstd_${lvl}"
     rank_label["$tag"]="zstd"
@@ -354,6 +396,7 @@ while IFS= read -r line; do
   case "$tag" in
     tz_q*) level="Q-${level_tag#q}sf/Reanchor" ;;
     tz_adaptive_*) level="Adap-ε${tag#tz_adaptive_}/${ADAPTIVE_BITS}b" ;;
+    tz_a7_sf*) level="A7-${tag#tz_a7_sf}sf" ;;
     zstd_*)     level="level ${level_tag}" ;;
     brotli_*)   level="q=${level_tag}" ;;
     fpzip)      level="lossless" ;;

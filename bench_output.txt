@@ -1,0 +1,182 @@
+
+## M4 External Baseline Benchmark — n=50000 values (390 KB uncompressed)
+
+ToroidZip modes tested: Q-3sf Q-6sf Q-9sf (Reanchor; use --sig-figs N to test one precision)
+  + Adaptive (v6-compat) ε=1e-6 1e-4 16b (--adaptive)
+  + Adaptive v7 sf=4 5 6 9 precision-relative (--adaptive-v7)
+Ratio = encoded_bytes / uncompressed_bytes (lower is better).
+External codecs are lossless; ToroidZip rows are lossy at the stated precision.
+
+Building ToroidZip CLI...
+Generating datasets (n=50000)...
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\sensor.f64 (50000 values, 400000 bytes)
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\financial.f64 (50000 values, 400000 bytes)
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\multiscale.f64 (50000 values, 400000 bytes)
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\volatile.f64 (50000 values, 400000 bytes)
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\nearconstant.f64 (50000 values, 400000 bytes)
+wrote C:\Users\dbrjo\Desktop\Hobby\Projects\toroidzip\bench_data\neuralweight.f64 (50000 values, 400000 bytes)
+
+  [SKIP] fpzip not found. Install: no binary release; build from source: https://github.com/LLNL/fpzip (requires cmake + C++ compiler)
+
+### Results
+
+| Dataset        | Codec          | Level/Mode   |     Ratio |   Enc MB/s |
+|---------------:|---------------:|-------------:|----------:|-----------:|
+| sensor         | uncompressed   | -            |    1.0000 |          - |
+| sensor         | toroidzip      | Q-3sf/Reanchor |    0.0255 |        8.9 |
+| sensor         | toroidzip      | Q-6sf/Reanchor |    0.0504 |        8.7 |
+| sensor         | toroidzip      | Q-9sf/Reanchor |    0.0504 |        7.8 |
+| sensor         | toroidzip      | Adap-ε1e-6  |    0.9831 |        6.8 |
+| sensor         | toroidzip      | Adap-ε1e-4  |    0.1292 |        7.2 |
+| sensor         | toroidzip      | A7-4sf(B=13) |    0.8784 |        6.7 |
+| sensor         | toroidzip      | A7-5sf(B=16) |    0.9058 |        6.8 |
+| sensor         | toroidzip      | A7-6sf(B=20) |    0.8652 |        6.9 |
+| sensor         | toroidzip      | A7-9sf(B=30) |    0.8886 |        6.8 |
+| sensor         | zstd           | level 3      |    0.9582 |        7.1 |
+| sensor         | zstd           | level 19     |    0.9335 |        4.5 |
+| sensor         | brotli         | q=6          |    0.8063 |        5.2 |
+| sensor         | brotli         | q=11         |    0.8839 |        0.2 |
+| financial      | uncompressed   | -            |    1.0000 |          - |
+| financial      | toroidzip      | Q-3sf/Reanchor |    0.0255 |        8.5 |
+| financial      | toroidzip      | Q-6sf/Reanchor |    0.0504 |        8.7 |
+| financial      | toroidzip      | Q-9sf/Reanchor |    0.0504 |        8.7 |
+| financial      | toroidzip      | Adap-ε1e-6  |    1.0087 |        7.8 |
+| financial      | toroidzip      | Adap-ε1e-4  |    0.8651 |        7.8 |
+| financial      | toroidzip      | A7-4sf(B=13) |    0.9915 |        7.8 |
+| financial      | toroidzip      | A7-5sf(B=16) |    0.9964 |        7.8 |
+| financial      | toroidzip      | A7-6sf(B=20) |    0.9870 |        7.5 |
+| financial      | toroidzip      | A7-9sf(B=30) |    0.9939 |        7.8 |
+| financial      | zstd           | level 3      |    0.1975 |        6.9 |
+| financial      | zstd           | level 19     |    0.1946 |        5.8 |
+| financial      | brotli         | q=6          |    0.1819 |        6.5 |
+| financial      | brotli         | q=11         |    0.1850 |        0.8 |
+| multiscale     | uncompressed   | -            |    1.0000 |          - |
+| multiscale     | toroidzip      | Q-3sf/Reanchor |    0.0255 |        8.5 |
+| multiscale     | toroidzip      | Q-6sf/Reanchor |    0.0504 |        8.7 |
+| multiscale     | toroidzip      | Q-9sf/Reanchor |    0.0504 |        8.7 |
+| multiscale     | toroidzip      | Adap-ε1e-6  |    0.9818 |        6.9 |
+| multiscale     | toroidzip      | Adap-ε1e-4  |    0.1306 |        7.2 |
+| multiscale     | toroidzip      | A7-4sf(B=13) |    0.8576 |        6.9 |
+| multiscale     | toroidzip      | A7-5sf(B=16) |    0.9218 |        6.9 |
+| multiscale     | toroidzip      | A7-6sf(B=20) |    0.9050 |        6.9 |
+| multiscale     | toroidzip      | A7-9sf(B=30) |    0.8874 |        6.9 |
+| multiscale     | zstd           | level 3      |    0.9590 |        7.2 |
+| multiscale     | zstd           | level 19     |    0.9309 |        4.2 |
+| multiscale     | brotli         | q=6          |    0.8643 |        5.7 |
+| multiscale     | brotli         | q=11         |    0.8755 |        0.2 |
+| volatile       | uncompressed   | -            |    1.0000 |          - |
+| volatile       | toroidzip      | Q-3sf/Reanchor |    0.0255 |        8.7 |
+| volatile       | toroidzip      | Q-6sf/Reanchor |    0.0504 |        8.7 |
+| volatile       | toroidzip      | Q-9sf/Reanchor |    0.0504 |        8.7 |
+| volatile       | toroidzip      | Adap-ε1e-6  |    0.9850 |        7.2 |
+| volatile       | toroidzip      | Adap-ε1e-4  |    0.1292 |        7.1 |
+| volatile       | toroidzip      | A7-4sf(B=13) |    1.0008 |        7.2 |
+| volatile       | toroidzip      | A7-5sf(B=16) |    0.9189 |        6.9 |
+| volatile       | toroidzip      | A7-6sf(B=20) |    0.8464 |        7.1 |
+| volatile       | toroidzip      | A7-9sf(B=30) |    0.8744 |        6.7 |
+| volatile       | zstd           | level 3      |    0.9425 |        5.8 |
+| volatile       | zstd           | level 19     |    0.8220 |        3.8 |
+| volatile       | brotli         | q=6          |    0.7270 |        5.2 |
+| volatile       | brotli         | q=11         |    0.7517 |        0.3 |
+| nearconstant   | uncompressed   | -            |    1.0000 |          - |
+| nearconstant   | toroidzip      | Q-3sf/Reanchor |    0.0255 |        8.3 |
+| nearconstant   | toroidzip      | Q-6sf/Reanchor |    0.0504 |        8.3 |
+| nearconstant   | toroidzip      | Q-9sf/Reanchor |    0.0504 |        8.7 |
+| nearconstant   | toroidzip      | Adap-ε1e-6  |    0.9855 |        7.1 |
+| nearconstant   | toroidzip      | Adap-ε1e-4  |    0.1292 |        7.2 |
+| nearconstant   | toroidzip      | A7-4sf(B=13) |    1.0008 |        7.2 |
+| nearconstant   | toroidzip      | A7-5sf(B=16) |    0.9203 |        6.9 |
+| nearconstant   | toroidzip      | A7-6sf(B=20) |    0.8465 |        6.9 |
+| nearconstant   | toroidzip      | A7-9sf(B=30) |    0.8651 |        7.1 |
+| nearconstant   | zstd           | level 3      |    0.9323 |        6.9 |
+| nearconstant   | zstd           | level 19     |    0.7376 |        3.7 |
+| nearconstant   | brotli         | q=6          |    0.6870 |        5.2 |
+| nearconstant   | brotli         | q=11         |    0.6919 |        0.3 |
+| neuralweight   | uncompressed   | -            |    1.0000 |          - |
+| neuralweight   | toroidzip      | Q-3sf/Reanchor |    0.0256 |        8.7 |
+| neuralweight   | toroidzip      | Q-6sf/Reanchor |    0.0505 |        8.5 |
+| neuralweight   | toroidzip      | Q-9sf/Reanchor |    0.0505 |        8.5 |
+| neuralweight   | toroidzip      | Adap-ε1e-6  |    0.9872 |        6.8 |
+| neuralweight   | toroidzip      | Adap-ε1e-4  |    0.2779 |        7.2 |
+| neuralweight   | toroidzip      | A7-4sf(B=13) |    0.9114 |        6.8 |
+| neuralweight   | toroidzip      | A7-5sf(B=16) |    0.9307 |        6.3 |
+| neuralweight   | toroidzip      | A7-6sf(B=20) |    0.9017 |        6.9 |
+| neuralweight   | toroidzip      | A7-9sf(B=30) |    0.9267 |        6.9 |
+| neuralweight   | zstd           | level 3      |    0.9485 |        6.8 |
+| neuralweight   | zstd           | level 19     |    0.9400 |        4.3 |
+| neuralweight   | brotli         | q=6          |    0.9367 |        6.1 |
+| neuralweight   | brotli         | q=11         |    0.9136 |        0.6 |
+
+### Tier comparison
+
+External codecs are lossless (no data loss). ToroidZip rows are lossy
+at the stated precision. Compare within a tier, not across tiers.
+
+#### Lossless tier (no data loss)
+
+| Dataset        | Best codec     | Level/Mode   |     Ratio |
+|---------------:|---------------:|-------------:|----------:|
+| sensor         | brotli         | q=6          |    0.8063 |
+| financial      | brotli         | q=6          |    0.1819 |
+| multiscale     | brotli         | q=6          |    0.8643 |
+| volatile       | brotli         | q=6          |    0.7270 |
+| nearconstant   | brotli         | q=6          |    0.6870 |
+| neuralweight   | brotli         | q=11         |    0.9136 |
+
+#### Q-3sf quantized tier (~3 significant figures, lossy)
+
+| Dataset        |  TZ ratio |   vs best lossless |
+|---------------:|----------:|-------------------:|
+| sensor         |    0.0255 |             -96.8% |
+| financial      |    0.0255 |             -86.0% |
+| multiscale     |    0.0255 |             -97.1% |
+| volatile       |    0.0255 |             -96.5% |
+| nearconstant   |    0.0255 |             -96.3% |
+| neuralweight   |    0.0256 |             -97.2% |
+
+#### Q-6sf quantized tier (~6 significant figures, lossy)
+
+| Dataset        |  TZ ratio |   vs best lossless |
+|---------------:|----------:|-------------------:|
+| sensor         |    0.0504 |             -93.8% |
+| financial      |    0.0504 |             -72.3% |
+| multiscale     |    0.0504 |             -94.2% |
+| volatile       |    0.0504 |             -93.1% |
+| nearconstant   |    0.0504 |             -92.7% |
+| neuralweight   |    0.0505 |             -94.5% |
+
+#### Q-9sf quantized tier (~9 significant figures, lossy)
+
+| Dataset        |  TZ ratio |   vs best lossless |
+|---------------:|----------:|-------------------:|
+| sensor         |    0.0504 |             -93.8% |
+| financial      |    0.0504 |             -72.3% |
+| multiscale     |    0.0504 |             -94.2% |
+| volatile       |    0.0504 |             -93.1% |
+| nearconstant   |    0.0504 |             -92.7% |
+| neuralweight   |    0.0505 |             -94.5% |
+
+### Overall ranking (average ratio across all datasets, lower is better)
+
+Note: TZ rows are lossy; lossless rows preserve all data. Not a fair
+head-to-head, but useful to see where each setting lands on the ratio axis.
+
+| Rank | Codec              | Level/Mode   | Type     |    Avg ratio |
+|-----:|-------------------:|-------------:|---------:|-------------:|
+|    1 | toroidzip          | Q-3sf/Reanchor | lossy    |       0.0255 |
+|    2 | toroidzip          | Q-6sf/Reanchor | lossy    |       0.0504 |
+|    3 | toroidzip          | Q-9sf/Reanchor | lossy    |       0.0504 |
+|    4 | toroidzip          | Adap-ε1e-4/16b | lossy    |       0.2769 |
+|    5 | brotli             | q=6          | lossless |       0.7005 |
+|    6 | brotli             | q=11         | lossless |       0.7169 |
+|    7 | zstd               | level 19     | lossless |       0.7598 |
+|    8 | zstd               | level 3      | lossless |       0.8230 |
+|    9 | toroidzip          | A7-6sf       | lossy    |       0.8920 |
+|   10 | toroidzip          | A7-9sf       | lossy    |       0.9060 |
+|   11 | toroidzip          | A7-5sf       | lossy    |       0.9323 |
+|   12 | toroidzip          | A7-4sf       | lossy    |       0.9401 |
+|   13 | toroidzip          | Adap-ε1e-6/16b | lossy    |       0.9886 |
+
+(bench_data/ removed; use --keep to retain)
+
+Done.
