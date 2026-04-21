@@ -372,6 +372,8 @@ func encodeLossless(values []float64, w io.Writer, opts EncodeOptions) error {
 //	count(8) + precisionBits(1) + ransFreqs(20) = 39 bytes.
 //
 // Body: [ransLen(4)][ransStream][anchor float64][per-event payloads].
+//
+//nolint:unused // retained for decode-compatibility reference; superseded by encodeAdaptiveV7
 func encodeQuantized(values []float64, w io.Writer, opts EncodeOptions) error {
 	bits := opts.PrecisionBits
 	if bits <= 0 {
@@ -1417,6 +1419,8 @@ func writeRansBody7(w io.Writer, classes []byte, freqs RansFreqs7, payloads []by
 // Header: magic(4) + version=6(1) + driftMode(1) + reanchorInterval(4) +
 //
 //	count(8) + precisionBits=30(1) + ransFreqs7(28) = 47 bytes.
+//
+//nolint:unused // retained for decode-compatibility reference; superseded by encodeAdaptiveV7
 func encodeAdaptiveV6(values []float64, w io.Writer, opts EncodeOptions) error {
 	classes, payloads := gatherRans7v6(values, opts)
 	freqs := RansCountFreqs7(classes)
