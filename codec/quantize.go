@@ -75,10 +75,10 @@ func DequantizeRatio(sym uint32, bits int) float64 {
 // produced by QuantizeRatio. The output range is [−2^(bits-1), 2^(bits-1))
 // which fits in int32 for all valid bits ∈ [1, 30].
 //
-// This encoding is used in the v6 stream for ClassNormal32 payloads: storing
-// the deviation from identity (ratio=1.0) rather than the absolute position
-// in log-space means smooth-data values cluster near zero and can be coded
-// in fewer bytes at full 30-bit precision.
+// This encoding is used in v6 and v7 streams: storing the signed deviation
+// from identity (ratio=1.0) rather than the absolute position in log-space
+// means smooth-data values cluster near zero. In v7, the offset magnitude
+// drives tier selection (u8/u16/u24/u32) at the configured PrecisionBits.
 func QuantizeRatioOffset(ratio float64, bits int) int32 {
 	bits = clampBits(bits)
 	sym := QuantizeRatio(ratio, bits)

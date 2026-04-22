@@ -1174,7 +1174,7 @@ func TestAdaptiveV5SigFigsWiring(t *testing.T) {
 }
 
 // TestAdaptiveV5TiersUsed verifies that v7 accuracy scales with PrecisionBits:
-// B=16 is bounded by 16-bit quantization error; B=30 by 30-bit quantization error.
+// higher PrecisionBits produces smaller reconstruction error.
 // This replaces the old v6 invariant (always 30-bit regardless of PrecisionBits).
 func TestAdaptiveV5TiersUsed(t *testing.T) {
 	values := makeSmoothSeries(500, 20.0, 1.0001)

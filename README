@@ -13,8 +13,8 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 10 complete — K_max decoupled (10,000 circuit breaker), --bytes 1|2|4 flag,
-tier-aware encode feedback; 149 tests, staticcheck clean.
+Status: Milestone 13 in progress — v8 adaptive stream (u8/u16/u24/u32 tiers by offset magnitude),
+mechanism guard tests; 123 passing tests.
 
 Usage
 -----
@@ -55,13 +55,13 @@ Flags (encode)
       raw:       no entropy coding (stream v1, baseline)
       lossless:  rANS-coded ratio stream (stream v2, default)
       quantized: lossy N-bit log-space quantization (stream v3)
-      adaptive:  per-ratio tiered hybrid — u16 / u32 / float64 (stream v5)
-                 tier chosen per ratio so ε is satisfied with minimum bytes
+      adaptive:  per-ratio tiered hybrid — u8 / u16 / u24 / u32 / float64 (stream v8)
+                 tier chosen by offset magnitude; PrecisionBits controls quantization grid
 
   --sig-figs N, -n N
       Guarantee N significant decimal figures in reconstructed values, end-to-end.
       This is the recommended lossy flag for most users.
-      Internally sets per-ratio ε = 0.5×10^-(N+2), enables adaptive reanchoring,
+      Internally sets PrecisionBits=SigFigsToBits(N+2), enables adaptive reanchoring,
       and caps reanchor interval at 10,000 as a circuit-breaker backstop
       (the adaptive drift check is the real guarantee; K_max is last resort).
       Prints the selected storage tier to stderr on encode.
@@ -81,7 +81,8 @@ Flags (encode)
       Cannot be used without --entropy-mode adaptive (except alongside --sig-figs).
 
   --precision N
-      Precision bits for quantized (1–30) or adaptive u16 tier (1–16).
+      Precision bits for quantized or adaptive mode (1–30).
+      In adaptive mode, controls quantization grid and u8/u16/u24/u32 tier routing.
       Cannot be combined with --sig-figs.
 
   --auto, -a

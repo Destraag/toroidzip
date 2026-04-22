@@ -61,7 +61,7 @@ func runEncode(args []string) error {
 		"storage tier by byte width: 1=u8 (~2 sf), 2=u16 (~4 sf), 4=u32 (~9 sf);\n"+
 			"\timplies --entropy-mode adaptive; cannot combine with --sig-figs")
 	precBits := fs.Int("precision", 0,
-		"precision bits (1-16 for adaptive, 1-30 for quantized); cannot combine with --sig-figs")
+		"precision bits (1-30 for adaptive or quantized); cannot combine with --sig-figs")
 	tolerance := fs.Float64("tolerance", 0.0,
 		"max relative quantization error for adaptive mode (0=lossless-equivalent, e.g. 1e-4)")
 	auto := fs.Bool("auto", false,
@@ -155,8 +155,9 @@ func runEncode(args []string) error {
 	}
 
 	// --sig-figs N / --bytes B: end-to-end reconstruction guarantee.
-	// Forces adaptive mode, sets per-ratio ε 100× tighter than T_end,
-	// enables adaptive reanchoring, caps reanchor interval at K_max circuit breaker.
+	// Forces adaptive mode; PrecisionBits=SigFigsToBits(N+2) drives tier accuracy.
+	// Tolerance=MaxFloat64 lets the v7 fast path quantize all ratios via tier routing
+	// (prevents ClassNormalExact eclipse). EndToEndTolerance drives adaptive reanchor.
 	var endToEndTolerance float64
 	adaptiveReanchor := false
 	precisionBits := 0
@@ -164,7 +165,7 @@ func runEncode(args []string) error {
 		entropyMode = codec.EntropyAdaptive
 		precisionBits = codec.SigFigsToBits(*sigFigs + 2) // tighter per-ratio precision
 		if *tolerance == 0 {
-			*tolerance = codec.SigFigsToTolerance(*sigFigs + 2) // per-ratio ε
+			*tolerance = math.MaxFloat64 // fast path: B drives accuracy, not per-ratio gate
 		}
 		endToEndTolerance = codec.SigFigsToTolerance(*sigFigs) // T_end guarantee
 		adaptiveReanchor = true
@@ -191,7 +192,7 @@ func runEncode(args []string) error {
 		entropyMode = codec.EntropyAdaptive
 		precisionBits = ceilBits
 		if *tolerance == 0 {
-			*tolerance = codec.SigFigsToTolerance(sf + 2)
+			*tolerance = math.MaxFloat64 // fast path: B drives accuracy, not per-ratio gate
 		}
 		endToEndTolerance = codec.SigFigsToTolerance(sf)
 		adaptiveReanchor = true

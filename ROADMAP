@@ -492,9 +492,9 @@ just wasteful. Payload-cost assertions would have caught it immediately.
                adversarial data must fire >0 reanchors; near-constant must fire <K/10
 - [x] 13a-iii: TestSigFigsWiring — verifies sig-figs→bits→header→tier→decode chain
                for N=3,4,5,6,9; guards the full encoding pipeline end-to-end
-- [ ] 13b-i:   Doc audit: all exported symbols; fix stale v5/v6 version references
-- [ ] 13b-ii:  EncodeOptions field doc audit: PrecisionBits, Tolerance, AdaptiveReanchor
-- [ ] 13b-iii: CLI help text + README tier description update (u8/u16/u24/u32)
+- [x] 13b-i:   Doc audit: all exported symbols; fix stale v5/v6 version references
+- [x] 13b-ii:  EncodeOptions field doc audit: PrecisionBits, Tolerance, AdaptiveReanchor
+- [x] 13b-iii: CLI help text + README tier description update (u8/u16/u24/u32)
 - [ ] 13c:     Full suite green; coverage ≥ 85%; PLAN/ROADMAP closed
 
 ### Milestone 14 — Formalization
