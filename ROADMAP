@@ -486,11 +486,11 @@ correctness. The M9→M12 tier-routing regression went undetected because tests
 only checked decode accuracy — the fallback to ClassNormalExact is correct,
 just wasteful. Payload-cost assertions would have caught it immediately.
 
-- [ ] 13a-i:   TestTierDistributionInvariant — hard bounds on u8/u16/u24/u32/exact
+- [x] 13a-i:   TestTierDistributionInvariant — hard bounds on u8/u16/u24/u32/exact
                fractions per dataset×B; catches PrecisionBits being ignored/capped
-- [ ] 13a-ii:  TestAdaptiveReanchorMechanism — count ClassReanchor events explicitly;
+- [x] 13a-ii:  TestAdaptiveReanchorMechanism — count ClassReanchor events explicitly;
                adversarial data must fire >0 reanchors; near-constant must fire <K/10
-- [ ] 13a-iii: TestSigFigsWiring — verifies sig-figs→bits→header→tier→decode chain
+- [x] 13a-iii: TestSigFigsWiring — verifies sig-figs→bits→header→tier→decode chain
                for N=3,4,5,6,9; guards the full encoding pipeline end-to-end
 - [ ] 13b-i:   Doc audit: all exported symbols; fix stale v5/v6 version references
 - [ ] 13b-ii:  EncodeOptions field doc audit: PrecisionBits, Tolerance, AdaptiveReanchor
