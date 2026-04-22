@@ -13,8 +13,8 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 13 in progress — v8 adaptive stream (u8/u16/u24/u32 tiers by offset magnitude),
-mechanism guard tests; 123 passing tests.
+Status: Milestone 13 complete — v8 adaptive stream (u8/u16/u24/u32 tiers by offset magnitude),
+mechanism guard tests, backward-compat decode tests; 188 passing tests, 80% coverage.
 
 Usage
 -----
@@ -70,7 +70,9 @@ Flags (encode)
 
   --bytes 1|2|4
       Select storage tier by byte width: 1=u8 (~2 sig figs), 2=u16 (~4 sig figs),
-      4=u32 (~9 sig figs). Implies adaptive mode with adaptive reanchoring.
+      4=u32 (~9 sig figs). Implies adaptive mode. PrecisionBits=B controls the
+      quantization grid; periodic reanchor (default interval 256) handles drift.
+      No end-to-end accuracy guarantee — use --sig-figs for that.
       Prints the selected tier to stderr on encode.
       Cannot be combined with --sig-figs, --bytes, --precision, or --auto.
 

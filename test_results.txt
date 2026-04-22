@@ -1,0 +1,337 @@
+--- FAIL: TestBackwardCompatV3Mixed (0.00s)
+    backward_compat_test.go:83: value[6]: expected 0 got 6.5627058009735295
+    backward_compat_test.go:88: value[7]: rel err 4.750057e-01 > 0.1
+
+## M3 Internal Benchmark — n=50000 values (390 KB uncompressed)
+
+Axes: EntropyMode × DriftMode × PrecisionBits.
+Ratio = encoded_bytes / uncompressed_bytes (lower is better).
+Tier = quantized payload width (u8/u16/u32). `-` = not quantized.
+
+| Dataset                | Mode                   |     Tier |     Ratio |   Enc bytes |   Enc MB/s |   Dec MB/s |
+|-----------------------:|-----------------------:|---------:|----------:|------------:|-----------:|-----------:|
+| Sensor                 | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| Sensor                 | Raw(v1)                |        - |    1.1250 |      450017 |      145.4 |      150.6 |
+| Sensor                 | Lossless/Reanchor      |        - |    1.0007 |      400286 |      345.9 |      173.1 |
+| Sensor                 | Lossless/Compensate    |        - |    1.0007 |      400286 |       90.8 |       82.7 |
+| Sensor                 | Lossless/Quantize      |        - |    1.0007 |      400280 |      257.3 |      156.3 |
+| Sensor                 | Q-3sf/Reanchor         |  u16/10b |    0.1292 |       51684 |       55.7 |       72.7 |
+| Sensor                 | Q-3sf/Compensate       |  u16/10b |    0.1292 |       51684 |       38.0 |       47.5 |
+| Sensor                 | Q-3sf/Quantize         |  u16/10b |    0.1292 |       51685 |       54.0 |       73.1 |
+| Sensor                 | Q-6sf/Reanchor         |  u32/20b |    0.2260 |       90382 |       51.5 |       70.8 |
+| Sensor                 | Q-6sf/Compensate       |  u32/20b |    0.2260 |       90382 |       36.2 |       47.3 |
+| Sensor                 | Q-6sf/Quantize         |  u32/20b |    0.2260 |       90383 |       47.4 |       75.9 |
+| Sensor                 | Q-9sf/Reanchor         |  u32/30b |    0.3742 |      149683 |       52.8 |       70.0 |
+| Sensor                 | Q-9sf/Compensate       |  u32/30b |    0.3742 |      149683 |       37.1 |       47.4 |
+| Sensor                 | Q-9sf/Quantize         |  u32/30b |    0.3742 |      149681 |       53.5 |       67.3 |
+| Sensor                 | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    0.9831 |      393253 |       48.0 |      152.5 |
+| Sensor                 | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.1292 |       51684 |       55.6 |       75.4 |
+| Sensor                 | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.1292 |       51684 |       55.6 |       75.8 |
+| Sensor                 | G-4sf/AdaptiveReanchor |  u32/20b |    0.8642 |      345689 |       48.3 |      130.6 |
+| Sensor                 | G-6sf/AdaptiveReanchor |  u32/26b |    0.9187 |      367489 |       49.1 |      144.2 |
+| Sensor                 | A7-3sf/Reanchor        |  u16/10b |    0.1292 |       51684 |       54.8 |       72.2 |
+| Sensor                 | A7-4sf/Reanchor        |  u16/13b |    0.1292 |       51684 |       55.6 |       72.8 |
+| Sensor                 | A7-5sf/Reanchor        |  u16/16b |    0.1292 |       51684 |       56.0 |       70.3 |
+| Sensor                 | A7-6sf/Reanchor        |  u32/20b |    0.2260 |       90382 |       51.2 |       72.3 |
+| Sensor                 | A7-9sf/Reanchor        |  u32/30b |    0.3742 |      149683 |       53.2 |       72.7 |
+| Financial              | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| Financial              | Raw(v1)                |        - |    1.1250 |      450017 |      130.0 |      142.9 |
+| Financial              | Lossless/Reanchor      |        - |    1.0115 |      404584 |      371.8 |      167.5 |
+| Financial              | Lossless/Compensate    |        - |    1.0115 |      404584 |       94.4 |      114.5 |
+| Financial              | Lossless/Quantize      |        - |    1.0115 |      404584 |      311.9 |      173.4 |
+| Financial              | Q-3sf/Reanchor         |  u16/10b |    0.8504 |      340140 |      171.5 |       86.7 |
+| Financial              | Q-3sf/Compensate       |  u16/10b |    0.8504 |      340140 |      107.8 |      102.1 |
+| Financial              | Q-3sf/Quantize         |  u16/10b |    0.8504 |      340140 |      159.0 |      104.4 |
+| Financial              | Q-6sf/Reanchor         |  u32/20b |    0.8730 |      349205 |      159.0 |      146.9 |
+| Financial              | Q-6sf/Compensate       |  u32/20b |    0.8730 |      349205 |      114.1 |       98.6 |
+| Financial              | Q-6sf/Quantize         |  u32/20b |    0.8730 |      349205 |      158.9 |      136.2 |
+| Financial              | Q-9sf/Reanchor         |  u32/30b |    0.9108 |      364303 |      159.0 |      143.2 |
+| Financial              | Q-9sf/Compensate       |  u32/30b |    0.9108 |      364303 |      103.7 |       97.1 |
+| Financial              | Q-9sf/Quantize         |  u32/30b |    0.9108 |      364303 |      146.8 |      146.4 |
+| Financial              | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    1.0087 |      403473 |      158.9 |      118.4 |
+| Financial              | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.8651 |      346048 |      173.2 |      137.4 |
+| Financial              | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.8651 |      346048 |       94.5 |      156.5 |
+| Financial              | G-4sf/AdaptiveReanchor |  u32/20b |    0.9864 |      394575 |      149.1 |      146.7 |
+| Financial              | G-6sf/AdaptiveReanchor |  u32/26b |    0.9987 |      399482 |      145.4 |       85.0 |
+| Financial              | A7-3sf/Reanchor        |  u16/10b |    0.8504 |      340140 |      166.8 |      139.7 |
+| Financial              | A7-4sf/Reanchor        |  u16/13b |    0.8648 |      345909 |      158.9 |      110.8 |
+| Financial              | A7-5sf/Reanchor        |  u16/16b |    0.8651 |      346048 |      173.4 |      135.6 |
+| Financial              | A7-6sf/Reanchor        |  u32/20b |    0.8730 |      349205 |      164.9 |      146.7 |
+| Financial              | A7-9sf/Reanchor        |  u32/30b |    0.9108 |      364303 |      158.8 |      121.8 |
+| MultiScale             | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| MultiScale             | Raw(v1)                |        - |    1.1250 |      450017 |      139.6 |      146.7 |
+| MultiScale             | Lossless/Reanchor      |        - |    1.0007 |      400286 |      356.8 |      167.8 |
+| MultiScale             | Lossless/Compensate    |        - |    1.0007 |      400286 |       94.1 |       84.3 |
+| MultiScale             | Lossless/Quantize      |        - |    1.0007 |      400286 |      300.3 |      187.0 |
+| MultiScale             | Q-3sf/Reanchor         |  u16/10b |    0.1292 |       51684 |       53.4 |       73.9 |
+| MultiScale             | Q-3sf/Compensate       |  u16/10b |    0.1292 |       51684 |       37.3 |       47.5 |
+| MultiScale             | Q-3sf/Quantize         |  u16/10b |    0.1292 |       51685 |       52.7 |       73.0 |
+| MultiScale             | Q-6sf/Reanchor         |  u32/20b |    0.2348 |       93927 |       54.5 |       73.3 |
+| MultiScale             | Q-6sf/Compensate       |  u32/20b |    0.2348 |       93927 |       37.3 |       46.4 |
+| MultiScale             | Q-6sf/Quantize         |  u32/20b |    0.2348 |       93927 |       54.2 |       72.9 |
+| MultiScale             | Q-9sf/Reanchor         |  u32/30b |    0.3764 |      150550 |       52.7 |       70.4 |
+| MultiScale             | Q-9sf/Compensate       |  u32/30b |    0.3764 |      150550 |       36.5 |       46.4 |
+| MultiScale             | Q-9sf/Quantize         |  u32/30b |    0.3764 |      150550 |       52.7 |       73.2 |
+| MultiScale             | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    0.9818 |      392739 |       49.1 |      176.0 |
+| MultiScale             | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.1306 |       52251 |       53.1 |       72.9 |
+| MultiScale             | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.1306 |       52251 |       54.4 |       76.0 |
+| MultiScale             | G-4sf/AdaptiveReanchor |  u32/20b |    0.9041 |      361634 |       49.2 |      153.9 |
+| MultiScale             | G-6sf/AdaptiveReanchor |  u32/26b |    0.9158 |      366317 |       48.1 |      145.5 |
+| MultiScale             | A7-3sf/Reanchor        |  u16/10b |    0.1292 |       51684 |       49.1 |       78.6 |
+| MultiScale             | A7-4sf/Reanchor        |  u16/13b |    0.1295 |       51794 |       54.4 |       73.4 |
+| MultiScale             | A7-5sf/Reanchor        |  u16/16b |    0.1306 |       52251 |       54.5 |       73.8 |
+| MultiScale             | A7-6sf/Reanchor        |  u32/20b |    0.2348 |       93927 |       51.4 |       70.2 |
+| MultiScale             | A7-9sf/Reanchor        |  u32/30b |    0.3764 |      150550 |       54.3 |       71.5 |
+| Volatile               | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| Volatile               | Raw(v1)                |        - |    1.1250 |      450017 |      145.6 |      118.4 |
+| Volatile               | Lossless/Reanchor      |        - |    1.0007 |      400280 |      301.9 |      201.1 |
+| Volatile               | Lossless/Compensate    |        - |    1.0007 |      400280 |       90.8 |       84.0 |
+| Volatile               | Lossless/Quantize      |        - |    1.0004 |      400169 |      303.4 |      159.0 |
+| Volatile               | Q-3sf/Reanchor         |  u16/10b |    0.1292 |       51684 |       53.0 |       73.1 |
+| Volatile               | Q-3sf/Compensate       |  u16/10b |    0.1292 |       51684 |       37.3 |       46.9 |
+| Volatile               | Q-3sf/Quantize         |  u16/10b |    0.1292 |       51684 |       52.6 |       67.9 |
+| Volatile               | Q-6sf/Reanchor         |  u32/20b |    0.1292 |       51684 |       56.1 |       67.9 |
+| Volatile               | Q-6sf/Compensate       |  u32/20b |    0.1292 |       51684 |       38.1 |       47.1 |
+| Volatile               | Q-6sf/Quantize         |  u32/20b |    0.1292 |       51692 |       52.8 |       74.7 |
+| Volatile               | Q-9sf/Reanchor         |  u32/30b |    0.2823 |      112902 |       53.7 |       75.8 |
+| Volatile               | Q-9sf/Compensate       |  u32/30b |    0.2823 |      112902 |       37.4 |       46.4 |
+| Volatile               | Q-9sf/Quantize         |  u32/30b |    0.2823 |      112904 |       51.9 |       75.7 |
+| Volatile               | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    0.9850 |      393998 |       50.2 |      172.3 |
+| Volatile               | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.1292 |       51684 |       54.4 |       74.1 |
+| Volatile               | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.1292 |       51684 |       55.8 |       75.0 |
+| Volatile               | G-4sf/AdaptiveReanchor |  u32/20b |    0.8452 |      338080 |       49.3 |       94.2 |
+| Volatile               | G-6sf/AdaptiveReanchor |  u32/26b |    0.9181 |      367229 |       49.9 |      138.1 |
+| Volatile               | A7-3sf/Reanchor        |  u16/10b |    0.1292 |       51684 |       54.4 |       74.6 |
+| Volatile               | A7-4sf/Reanchor        |  u16/13b |    0.1292 |       51684 |       53.7 |       73.2 |
+| Volatile               | A7-5sf/Reanchor        |  u16/16b |    0.1292 |       51684 |       55.8 |       71.7 |
+| Volatile               | A7-6sf/Reanchor        |  u32/20b |    0.1292 |       51684 |       56.0 |       68.1 |
+| Volatile               | A7-9sf/Reanchor        |  u32/30b |    0.2823 |      112902 |       55.2 |       71.8 |
+| NearConstant           | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| NearConstant           | Raw(v1)                |        - |    1.1250 |      450017 |      144.6 |      142.8 |
+| NearConstant           | Lossless/Reanchor      |        - |    1.0007 |      400286 |      317.8 |      189.2 |
+| NearConstant           | Lossless/Compensate    |        - |    1.0007 |      400286 |       92.4 |       82.5 |
+| NearConstant           | Lossless/Quantize      |        - |    1.0004 |      400169 |      238.5 |      190.8 |
+| NearConstant           | Q-3sf/Reanchor         |  u16/10b |    0.1292 |       51684 |       55.7 |       74.3 |
+| NearConstant           | Q-3sf/Compensate       |  u16/10b |    0.1292 |       51684 |       37.2 |       46.7 |
+| NearConstant           | Q-3sf/Quantize         |  u16/10b |    0.1292 |       51685 |       54.2 |       73.1 |
+| NearConstant           | Q-6sf/Reanchor         |  u32/20b |    0.1292 |       51685 |       55.6 |       76.3 |
+| NearConstant           | Q-6sf/Compensate       |  u32/20b |    0.1292 |       51685 |       38.8 |       48.9 |
+| NearConstant           | Q-6sf/Quantize         |  u32/20b |    0.1292 |       51694 |       54.3 |       73.4 |
+| NearConstant           | Q-9sf/Reanchor         |  u32/30b |    0.2538 |      101516 |       54.3 |       73.7 |
+| NearConstant           | Q-9sf/Compensate       |  u32/30b |    0.2538 |      101516 |       38.7 |       46.1 |
+| NearConstant           | Q-9sf/Quantize         |  u32/30b |    0.2538 |      101509 |       52.8 |       76.0 |
+| NearConstant           | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    0.9855 |      394199 |       50.1 |      159.0 |
+| NearConstant           | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.1292 |       51684 |       52.8 |       73.9 |
+| NearConstant           | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.1292 |       51684 |       55.8 |       74.8 |
+| NearConstant           | G-4sf/AdaptiveReanchor |  u32/20b |    0.8454 |      338154 |       49.2 |      134.9 |
+| NearConstant           | G-6sf/AdaptiveReanchor |  u32/26b |    0.9162 |      366472 |       47.1 |      157.4 |
+| NearConstant           | A7-3sf/Reanchor        |  u16/10b |    0.1292 |       51684 |       54.1 |       69.5 |
+| NearConstant           | A7-4sf/Reanchor        |  u16/13b |    0.1292 |       51684 |       54.2 |       71.6 |
+| NearConstant           | A7-5sf/Reanchor        |  u16/16b |    0.1292 |       51684 |       55.4 |       75.9 |
+| NearConstant           | A7-6sf/Reanchor        |  u32/20b |    0.1292 |       51685 |       55.7 |       72.8 |
+| NearConstant           | A7-9sf/Reanchor        |  u32/30b |    0.2538 |      101516 |       54.0 |       75.9 |
+| NeuralWeight           | Uncompressed           |        - |    1.0000 |      400000 |          - |          - |
+| NeuralWeight           | Raw(v1)                |        - |    1.1250 |      450017 |      133.5 |      142.8 |
+| NeuralWeight           | Lossless/Reanchor      |        - |    1.0007 |      400286 |      328.8 |      158.7 |
+| NeuralWeight           | Lossless/Compensate    |        - |    1.0007 |      400286 |       89.8 |       79.2 |
+| NeuralWeight           | Lossless/Quantize      |        - |    1.0007 |      400286 |      249.6 |      180.7 |
+| NeuralWeight           | Q-3sf/Reanchor         |  u16/10b |    0.1801 |       72023 |       54.0 |       68.7 |
+| NeuralWeight           | Q-3sf/Compensate       |  u16/10b |    0.1801 |       72023 |       35.7 |       44.6 |
+| NeuralWeight           | Q-3sf/Quantize         |  u16/10b |    0.1801 |       72023 |       51.9 |       69.4 |
+| NeuralWeight           | Q-6sf/Reanchor         |  u32/20b |    0.3440 |      137591 |       51.2 |       70.6 |
+| NeuralWeight           | Q-6sf/Compensate       |  u32/20b |    0.3440 |      137591 |       36.5 |       45.4 |
+| NeuralWeight           | Q-6sf/Quantize         |  u32/20b |    0.3440 |      137591 |       50.7 |       67.6 |
+| NeuralWeight           | Q-9sf/Reanchor         |  u32/30b |    0.4966 |      198659 |       52.0 |       65.5 |
+| NeuralWeight           | Q-9sf/Compensate       |  u32/30b |    0.4966 |      198659 |       36.2 |       44.2 |
+| NeuralWeight           | Q-9sf/Quantize         |  u32/30b |    0.4966 |      198659 |       49.0 |       60.9 |
+| NeuralWeight           | Adaptive(ε=1e-06)/Reanchor |  u16/16b |    0.9872 |      394893 |       46.9 |      181.3 |
+| NeuralWeight           | Adaptive(ε=1e-04)/Reanchor |  u16/16b |    0.2779 |      111169 |       52.7 |       63.1 |
+| NeuralWeight           | Adaptive(ε=1e-03)/Reanchor |  u16/16b |    0.2779 |      111169 |       51.3 |       67.9 |
+| NeuralWeight           | G-4sf/AdaptiveReanchor |  u32/20b |    0.9008 |      360320 |       46.4 |      127.0 |
+| NeuralWeight           | G-6sf/AdaptiveReanchor |  u32/26b |    0.9438 |      377524 |       46.0 |      141.2 |
+| NeuralWeight           | A7-3sf/Reanchor        |  u16/10b |    0.1801 |       72023 |       53.4 |       70.6 |
+| NeuralWeight           | A7-4sf/Reanchor        |  u16/13b |    0.2381 |       95245 |       53.5 |       65.1 |
+| NeuralWeight           | A7-5sf/Reanchor        |  u16/16b |    0.2779 |      111169 |       52.2 |       65.3 |
+| NeuralWeight           | A7-6sf/Reanchor        |  u32/20b |    0.3440 |      137591 |       52.5 |       69.7 |
+| NeuralWeight           | A7-9sf/Reanchor        |  u32/30b |    0.4966 |      198659 |       52.7 |       63.0 |
+
+### Best compression ratio per dataset (TL;DR — excludes Uncompressed / Raw baselines)
+
+| Dataset        | Best mode                      |     Tier |     Ratio |       MaxErr |
+|---------------:|-------------------------------:|---------:|----------:|-------------:|
+| Sensor         | Q-3sf/Reanchor                 |  u16/10b |    0.1292 |    2.711e-03 |
+| Financial      | Q-3sf/Reanchor                 |  u16/10b |    0.8504 |    2.711e-03 |
+| MultiScale     | Q-3sf/Reanchor                 |  u16/10b |    0.1292 |    2.711e-03 |
+| Volatile       | Q-3sf/Reanchor                 |  u16/10b |    0.1292 |    2.711e-03 |
+| NearConstant   | Q-3sf/Reanchor                 |  u16/10b |    0.1292 |    2.711e-03 |
+| NeuralWeight   | Q-3sf/Reanchor                 |  u16/10b |    0.1801 |    1.303e+02 |
+
+### Observations
+
+- **Raw(v1) overhead**: 12.5% larger than uncompressed float64 (class byte per value + stream header).
+- **Q-6sf vs Q-9sf**: sizes differ across some datasets (20-bit vs 30-bit, both in u32 tier).
+- **DriftMode does not change output size** — Reanchor, Compensate, and Quantize produce identical (or near-identical) byte counts because DriftMode controls reconstruction precision, not stream layout. However, Reanchor (346 MB/s) is ~3.8× faster than Compensate (91 MB/s) by skipping Kahan bookkeeping.
+- **Lossless barely compresses smooth data** (Sensor ratio 1.0007): IdentityEpsilon=1e-9 is far tighter than smooth-data ratio variation (~1e-4), so nearly all ratios are ClassNormal with full float64 payloads.
+- **Financial resists compression** (best 0.8504 at Q-3sf/Reanchor): log-normal random walks produce near-uniform ratio distributions.
+- **Adaptive ε=1e-6 (u32 mid-tier, Sensor)**: ratio 0.9831. At this tolerance most ratios exceed 16-bit precision and fall into the ClassNormal32 (uint32) tier, giving ~4 bytes/ratio vs 2 for u16 or 8 for float64.
+- **Adaptive ε=1e-4 vs Q-6sf (Sensor)**: adaptive ratio 0.1292 vs quantized 0.2260. Adaptive routes exact-path ratios as float64 payloads, so it is larger than pure quantized when most ratios fit within tolerance, but smaller than lossless.
+- **Adaptive ε=1e-3 vs Q-3sf (Sensor)**: adaptive ratio 0.1292 vs Q-3sf 0.1292.
+- **A7-3sf vs Q-3sf (Sensor)**: A7=0.1292, Q=0.1292 — both use B=10; should be equal (adaptive with Tolerance=MaxFloat64 ≡ quantized at same bits).
+- **A7-4sf (B=13, Sensor)**: ratio 0.1292 — smooth data at 4 sig figs uses u8 (1B/ratio); v6 equivalent was u16 (2B/ratio at 30-bit). B=13 caps max offset at ±4096, so u16 is the worst case.
+- **A7-5sf (B=16, Sensor)**: ratio 0.1292 — smooth data uses u8/u16.
+- **A7-6sf vs A7-9sf (Sensor)**: 0.2260 vs 0.3742 — at 6 sig figs (B=20) moderate-step data lands in u24 (3B); at 9 sig figs (B=30) the same data spills to u32 (4B) as in v6.
+
+
+## U24 Savings Analysis — n=50000 values
+
+Measures: of all ClassNormal ratios that fall into the u32 tier,
+how many have index < 2^24 and would save 1 byte with a 24-bit tier?
+
+| Dataset        |  sf |  normals |      u16 |      u32 |  u32<24b |  pct<24b |  saving% |
+|---------------:|----:|---------:|---------:|---------:|---------:|---------:|---------:|
+| Sensor         |   5 |    49999 |       61 |    49938 |        0 |     0.0% |    0.00% |
+| Sensor         |   6 |    49999 |        4 |    49995 |        0 |     0.0% |    0.00% |
+| Sensor         |   7 |    49999 |        0 |     9838 |        0 |     0.0% |    0.00% |
+| Financial      |   5 |     9246 |       11 |     9235 |        0 |     0.0% |    0.00% |
+| Financial      |   6 |     9246 |        0 |     9246 |        0 |     0.0% |    0.00% |
+| Financial      |   7 |     9246 |        0 |     1817 |        0 |     0.0% |    0.00% |
+| MultiScale     |   5 |    49999 |       79 |    49920 |        0 |     0.0% |    0.00% |
+| MultiScale     |   6 |    49999 |        8 |    49991 |        0 |     0.0% |    0.00% |
+| MultiScale     |   7 |    49999 |        0 |     9689 |        0 |     0.0% |    0.00% |
+| Volatile       |   5 |    49998 |       66 |    49932 |        0 |     0.0% |    0.00% |
+| Volatile       |   6 |    49998 |        7 |    49991 |        0 |     0.0% |    0.00% |
+| Volatile       |   7 |    49998 |        1 |     9546 |        0 |     0.0% |    0.00% |
+| NearConstant   |   5 |    49999 |       58 |    49941 |        0 |     0.0% |    0.00% |
+| NearConstant   |   6 |    49999 |        6 |    49993 |        0 |     0.0% |    0.00% |
+| NearConstant   |   7 |    49999 |        1 |     9875 |        0 |     0.0% |    0.00% |
+| NeuralWeight   |   5 |    49999 |       56 |    49943 |     6560 |    13.1% |    3.28% |
+| NeuralWeight   |   6 |    49999 |        4 |    49995 |     6560 |    13.1% |    3.28% |
+| NeuralWeight   |   7 |    49999 |        0 |     8301 |        2 |     0.0% |    0.00% |
+| Float32Smooth  |   5 |    49973 |       60 |    49913 |        0 |     0.0% |    0.00% |
+| Float32Smooth  |   6 |    49973 |        9 |    49964 |        0 |     0.0% |    0.00% |
+| Float32Smooth  |   7 |    49973 |        1 |     9713 |        0 |     0.0% |    0.00% |
+
+
+## Signed-Offset Savings Analysis — n=50000 values
+
+Compares v6 payload bytes (u16=int16 offset / u32=int32 offset)
+vs hypothetical v5 (all 30-bit ratios stored as u32, 4 bytes).
+Also shows hypothetical v7 with u8 tier (|off30| <= 127, 1 byte).
+At 30-bit precision (QuantMaxLog2R=4), int8 covers ratios within +-3.3e-7 of 1.0.
+
+| Dataset        |    tol | u8(<=127) |      u16 |      u32 |      f64 |  bytesV6 |  bytesV7 |  bytesV5 |   v6save% |
+|---------------:|-------:|---------:|---------:|---------:|---------:|---------:|---------:|---------:|----------:|
+| Sensor         |  1e-03 |       17 |     4227 |    45772 |        0 |   191542 |   191525 |   199996 |      4.2% |
+| Sensor         |  1e-06 |       17 |     4227 |    45772 |        0 |   191542 |   191525 |   199996 |      4.2% |
+| Sensor         |  1e-09 |        1 |     1654 |    17726 |    30619 |   319164 |   319163 |   322472 |      1.0% |
+| Financial      |  1e-03 |        1 |      130 |     9116 |        0 |    36724 |    36723 |    36984 |      0.7% |
+| Financial      |  1e-06 |        1 |      130 |     9116 |        0 |    36724 |    36723 |    36984 |      0.7% |
+| Financial      |  1e-09 |        0 |       51 |     3483 |     5712 |    59730 |    59730 |    59832 |      0.2% |
+| MultiScale     |  1e-03 |       12 |     3108 |    46891 |        0 |   193780 |   193768 |   199996 |      3.1% |
+| MultiScale     |  1e-06 |       12 |     3108 |    46891 |        0 |   193780 |   193768 |   199996 |      3.1% |
+| MultiScale     |  1e-09 |        6 |     1206 |    18203 |    30590 |   319944 |   319938 |   322356 |      0.7% |
+| Volatile       |  1e-03 |      175 |    42409 |     7589 |        0 |   115174 |   114999 |   199992 |     42.4% |
+| Volatile       |  1e-06 |      175 |    42409 |     7589 |        0 |   115174 |   114999 |   199992 |     42.4% |
+| Volatile       |  1e-09 |       60 |    16358 |     2959 |    30681 |   290000 |   289940 |   322716 |     10.1% |
+| NearConstant   |  1e-03 |      307 |    49999 |        0 |        0 |    99998 |    99691 |   199996 |     50.0% |
+| NearConstant   |  1e-06 |      307 |    49999 |        0 |        0 |    99998 |    99691 |   199996 |     50.0% |
+| NearConstant   |  1e-09 |      118 |    19521 |        0 |    30478 |   282866 |   282748 |   321908 |     12.1% |
+| NeuralWeight   |  1e-03 |        0 |       28 |    49971 |        0 |   199940 |   199940 |   199996 |      0.0% |
+| NeuralWeight   |  1e-06 |        0 |       28 |    49971 |        0 |   199940 |   199940 |   199996 |      0.0% |
+| NeuralWeight   |  1e-09 |        0 |       10 |    16701 |    33288 |   333128 |   333128 |   333148 |      0.0% |
+| Float32Smooth  |  1e-03 |      311 |    49973 |        0 |        0 |    99946 |    99635 |   199892 |     50.0% |
+| Float32Smooth  |  1e-06 |      311 |    49973 |        0 |        0 |    99946 |    99635 |   199892 |     50.0% |
+| Float32Smooth  |  1e-09 |      123 |    19394 |        0 |    30579 |   283420 |   283297 |   322208 |     12.0% |
+
+
+## Quantized Offset Savings — v3 (absolute index) vs v4 (signed offset) — n=50000
+
+v3 byte width: sf=4,5 → 2 bytes (u16); sf=6,7 → 4 bytes (u32)
+v4 routes by |off| magnitude: u8(1B)/u16(2B)/u24(3B)/u32(4B)
+
+| Dataset        |   sf |     B |       u8 |      u16 |      u24 |      u32 |  bytesV3 |  bytesV4 |     save% |
+|---------------:|-----:|------:|---------:|---------:|---------:|---------:|---------:|---------:|----------:|
+| Sensor         |    4 |    13 |    49999 |        0 |        0 |        0 |    99998 |    49999 |     50.0% |
+| Sensor         |    5 |    16 |    49999 |        0 |        0 |        0 |    99998 |    49999 |     50.0% |
+| Sensor         |    6 |    20 |    16919 |    33080 |        0 |        0 |   199996 |    83079 |     58.5% |
+| Sensor         |    7 |    23 |     2154 |    47845 |        0 |        0 |   199996 |    97844 |     51.1% |
+| Financial      |    4 |    13 |     4608 |     4638 |        0 |        0 |    18492 |    13884 |     24.9% |
+| Financial      |    5 |    16 |     4467 |     4779 |        0 |        0 |    18492 |    14025 |     24.2% |
+| Financial      |    6 |    20 |      486 |     8760 |        0 |        0 |    36984 |    18006 |     51.3% |
+| Financial      |    7 |    23 |       55 |     4553 |     4638 |        0 |    36984 |    23075 |     37.6% |
+| MultiScale     |    4 |    13 |    49952 |       47 |        0 |        0 |    99998 |    50046 |     50.0% |
+| MultiScale     |    5 |    16 |    49730 |      269 |        0 |        0 |    99998 |    50268 |     49.7% |
+| MultiScale     |    6 |    20 |    12696 |    37303 |        0 |        0 |   199996 |    87302 |     56.3% |
+| MultiScale     |    7 |    23 |     1546 |    48262 |      191 |        0 |   199996 |    98643 |     50.7% |
+| Volatile       |    4 |    13 |    49998 |        0 |        0 |        0 |    99996 |    49998 |     50.0% |
+| Volatile       |    5 |    16 |    49998 |        0 |        0 |        0 |    99996 |    49998 |     50.0% |
+| Volatile       |    6 |    20 |    49998 |        0 |        0 |        0 |   199992 |    49998 |     75.0% |
+| Volatile       |    7 |    23 |    21328 |    28670 |        0 |        0 |   199992 |    78668 |     60.7% |
+| NearConstant   |    4 |    13 |    49999 |        0 |        0 |        0 |    99998 |    49999 |     50.0% |
+| NearConstant   |    5 |    16 |    49999 |        0 |        0 |        0 |    99998 |    49999 |     50.0% |
+| NearConstant   |    6 |    20 |    49999 |        0 |        0 |        0 |   199996 |    49999 |     75.0% |
+| NearConstant   |    7 |    23 |    42234 |     7765 |        0 |        0 |   199996 |    57764 |     71.1% |
+| NeuralWeight   |    4 |    13 |    11936 |    38063 |        0 |        0 |    99998 |    88062 |     11.9% |
+| NeuralWeight   |    5 |    16 |     1642 |    41826 |     6531 |        0 |    99998 |   104887 |     -4.9% |
+| NeuralWeight   |    6 |    20 |      106 |    20716 |    29177 |        0 |   199996 |   129069 |     35.5% |
+| NeuralWeight   |    7 |    23 |       13 |     3230 |    46756 |        0 |   199996 |   146741 |     26.6% |
+| Float32Smooth  |    4 |    13 |    49973 |        0 |        0 |        0 |    99946 |    49973 |     50.0% |
+| Float32Smooth  |    5 |    16 |    49973 |        0 |        0 |        0 |    99946 |    49973 |     50.0% |
+| Float32Smooth  |    6 |    20 |    49973 |        0 |        0 |        0 |   199892 |    49973 |     75.0% |
+| Float32Smooth  |    7 |    23 |    39808 |    10165 |        0 |        0 |   199892 |    60138 |     69.9% |
+
+
+## Adaptive V7 Offset Savings — precision-relative (v7) vs 30-bit-always (v6) — n=50000
+
+v6: offsets always at 30-bit; tier = u16 (|off30|<=32767) or u32.
+v7: offsets at configured bits; tier = u8/u16/u24/u32 by |offB|.
+tol=MaxFloat64 ("quantize all normals") — fastPath fires at all tested precision levels.
+
+| Dataset        |   sf |     B |       u8 |      u16 |      u24 |      u32 |  bytesV7 |  bytesV6 |    save% |  maxRelErr |
+|---------------:|-----:|------:|---------:|---------:|---------:|---------:|---------:|---------:|---------:|-----------:|
+| Sensor         |    3 |    10 |    49999 |        0 |        0 |        0 |    49999 |   199586 |    74.9% |  2.711e-03 |
+| Sensor         |    4 |    13 |    49999 |        0 |        0 |        0 |    49999 |   199500 |    74.9% |  3.385e-04 |
+| Sensor         |    5 |    16 |    44941 |     5058 |        0 |        0 |    55057 |   196948 |    72.0% |  4.231e-05 |
+| Sensor         |    6 |    20 |    16959 |    33040 |        0 |        0 |    83039 |   191376 |    56.6% |  2.644e-06 |
+| Sensor         |    7 |    23 |     2131 |    47868 |        0 |        0 |    97867 |   191516 |    48.9% |  3.305e-07 |
+| Sensor         |    9 |    30 |       16 |     4212 |    45771 |        0 |   145753 |   191540 |    23.9% |  2.582e-09 |
+| Financial      |    3 |    10 |     9245 |        0 |        0 |        0 |     9245 |    36960 |    75.0% |  2.711e-03 |
+| Financial      |    4 |    13 |     4608 |     4637 |        0 |        0 |    13882 |    36930 |    62.4% |  3.385e-04 |
+| Financial      |    5 |    16 |     4444 |     4802 |        0 |        0 |    14048 |    36732 |    61.8% |  4.230e-05 |
+| Financial      |    6 |    20 |      494 |     8752 |        0 |        0 |    17998 |    36734 |    51.0% |  2.644e-06 |
+| Financial      |    7 |    23 |       62 |     4546 |     4638 |        0 |    23068 |    36722 |    37.2% |  3.305e-07 |
+| Financial      |    9 |    30 |        1 |      129 |     4478 |     4638 |    32245 |    36724 |    12.2% |  2.582e-09 |
+| MultiScale     |    3 |    10 |    49999 |        0 |        0 |        0 |    49999 |   199990 |    75.0% |  2.711e-03 |
+| MultiScale     |    4 |    13 |    49952 |       47 |        0 |        0 |    50046 |   199992 |    75.0% |  3.385e-04 |
+| MultiScale     |    5 |    16 |    49730 |      269 |        0 |        0 |    50268 |   192972 |    74.0% |  4.231e-05 |
+| MultiScale     |    6 |    20 |    12652 |    37347 |        0 |        0 |    87346 |   193752 |    54.9% |  2.644e-06 |
+| MultiScale     |    7 |    23 |     1546 |    48262 |      191 |        0 |    98643 |   193780 |    49.1% |  3.305e-07 |
+| MultiScale     |    9 |    30 |       12 |     3096 |    46773 |      118 |   146995 |   193780 |    24.1% |  2.582e-09 |
+| Volatile       |    3 |    10 |    49999 |        0 |        0 |        0 |    49999 |   199994 |    75.0% |  2.711e-03 |
+| Volatile       |    4 |    13 |    49999 |        0 |        0 |        0 |    49999 |   198022 |    74.8% |  3.385e-04 |
+| Volatile       |    5 |    16 |    49778 |      221 |        0 |        0 |    50220 |   199426 |    74.8% |  4.231e-05 |
+| Volatile       |    6 |    20 |    49999 |        0 |        0 |        0 |    49999 |   126942 |    60.6% |  2.644e-06 |
+| Volatile       |    7 |    23 |    21357 |    28641 |        0 |        0 |    78639 |   115796 |    32.1% |  3.305e-07 |
+| Volatile       |    9 |    30 |      176 |    42235 |     7588 |        0 |   107410 |   115174 |     6.7% |  2.582e-09 |
+| NearConstant   |    3 |    10 |    49999 |        0 |        0 |        0 |    49999 |   199994 |    75.0% |  2.711e-03 |
+| NearConstant   |    4 |    13 |    49999 |        0 |        0 |        0 |    49999 |   197536 |    74.7% |  3.385e-04 |
+| NearConstant   |    5 |    16 |    38109 |    11890 |        0 |        0 |    61889 |   197118 |    68.6% |  4.230e-05 |
+| NearConstant   |    6 |    20 |    49999 |        0 |        0 |        0 |    49999 |   127944 |    60.9% |  2.644e-06 |
+| NearConstant   |    7 |    23 |    41667 |     8331 |        0 |        0 |    58329 |    99996 |    41.7% |  3.305e-07 |
+| NearConstant   |    9 |    30 |      301 |    49698 |        0 |        0 |    99697 |    99998 |     0.3% |  2.582e-09 |
+| NeuralWeight   |    3 |    10 |     8821 |    41178 |        0 |        0 |    91177 |   199990 |    54.4% |  1.303e+02 |
+| NeuralWeight   |    4 |    13 |     1309 |    48690 |        0 |        0 |    98689 |   199992 |    50.7% |  1.301e+02 |
+| NeuralWeight   |    5 |    16 |      181 |    42764 |     7054 |        0 |   106871 |   199988 |    46.6% |  1.301e+02 |
+| NeuralWeight   |    6 |    20 |       16 |     2576 |    47407 |        0 |   147389 |   199986 |    26.3% |  1.301e+02 |
+| NeuralWeight   |    7 |    23 |        3 |      352 |    49644 |        0 |   149639 |   199984 |    25.2% |  1.301e+02 |
+| NeuralWeight   |    9 |    30 |        0 |        6 |      672 |    49321 |   199312 |   199984 |     0.3% |  1.301e+02 |
+| Float32Smooth  |    3 |    10 |    49999 |        0 |        0 |        0 |    49999 |   199994 |    75.0% |  2.711e-03 |
+| Float32Smooth  |    4 |    13 |    49999 |        0 |        0 |        0 |    49999 |   191790 |    73.9% |  3.385e-04 |
+| Float32Smooth  |    5 |    16 |    49999 |        0 |        0 |        0 |    49999 |   187516 |    73.3% |  4.231e-05 |
+| Float32Smooth  |    6 |    20 |    49999 |        0 |        0 |        0 |    49999 |   132398 |    62.2% |  2.644e-06 |
+| Float32Smooth  |    7 |    23 |    39263 |    10736 |        0 |        0 |    60735 |    99998 |    39.3% |  3.305e-07 |
+| Float32Smooth  |    9 |    30 |      342 |    49657 |        0 |        0 |    99656 |    99998 |     0.3% |  2.582e-09 |
+
+FAIL
+FAIL	github.com/Destraag/toroidzip/codec	12.372s
+FAIL

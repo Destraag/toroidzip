@@ -179,6 +179,10 @@ func runEncode(args []string) error {
 			codec.BitsToSigFigs(ceilBits), codec.SigFigsToMaxK(*sigFigs))
 	} else if *bytesFlag > 0 {
 		// --bytes B: select storage tier directly by byte width.
+		// Accuracy is controlled by PrecisionBits; periodic reanchor (default 256)
+		// handles accumulated drift. Adaptive reanchor is not enabled — the
+		// endToEndTolerance check fires per-step, not per-series, and would flood
+		// the stream with ClassReanchor events at tiers where ε_max(B) > tol.
 		var ceilBits int
 		switch *bytesFlag {
 		case 1:
@@ -194,13 +198,8 @@ func runEncode(args []string) error {
 		if *tolerance == 0 {
 			*tolerance = math.MaxFloat64 // fast path: B drives accuracy, not per-ratio gate
 		}
-		endToEndTolerance = codec.SigFigsToTolerance(sf)
-		adaptiveReanchor = true
-		if !reanchorExplicit {
-			*reanchorInterval = codec.SigFigsToMaxK(sf)
-		}
-		fmt.Fprintf(os.Stderr, "--bytes %d: %s tier (%d bits / %d sig figs; K_max=%d)\n",
-			*bytesFlag, tierName(ceilBits), ceilBits, sf, codec.SigFigsToMaxK(sf))
+		fmt.Fprintf(os.Stderr, "--bytes %d: %s tier (%d bits / %d sig figs; reanchor-interval=%d)\n",
+			*bytesFlag, tierName(ceilBits), ceilBits, sf, *reanchorInterval)
 	} else if *precBits > 0 {
 		if entropyMode != codec.EntropyAdaptive {
 			entropyMode = codec.EntropyQuantized

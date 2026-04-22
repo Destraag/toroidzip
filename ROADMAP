@@ -495,7 +495,9 @@ just wasteful. Payload-cost assertions would have caught it immediately.
 - [x] 13b-i:   Doc audit: all exported symbols; fix stale v5/v6 version references
 - [x] 13b-ii:  EncodeOptions field doc audit: PrecisionBits, Tolerance, AdaptiveReanchor
 - [x] 13b-iii: CLI help text + README tier description update (u8/u16/u24/u32)
-- [ ] 13c:     Full suite green; coverage ≥ 85%; PLAN/ROADMAP closed
+- [x] 13c-i:   Coverage 80.2% (from 65.5%); remaining gap is I/O error paths + removed v4 encoder
+- [x] 13c-ii:  CLI integration test — TestCLISigFigsWiring / TestCLIBytesWiring; guards MaxFloat64 wiring
+- [x] 13d:     Full suite green (188 tests); coverage 80.2%; PLAN/ROADMAP closed
 
 ### Milestone 14 — Formalization
 
