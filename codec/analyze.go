@@ -291,3 +291,84 @@ func AnalyzeTiers(ratios []float64, bits int, tol float64) TierRow {
 	}
 	return row
 }
+
+// TierRowV8 holds the per-tier count for a single (bits, ε) configuration
+// as produced by the v8 (AdaptiveV7) encoder's 4-tier offset-magnitude scheme.
+type TierRowV8 struct {
+	Epsilon float64
+	Bits    int // PrecisionBits used for quantisation
+	Total   int
+	U8      int // ClassNormal8  — int8  payload (1 byte)
+	U16     int // ClassNormal   — int16 payload (2 bytes)
+	U24     int // ClassNormal24 — int24 payload (3 bytes)
+	U32     int // ClassNormal32 — int32 payload (4 bytes)
+	F64     int // ClassNormalExact — float64 payload (8 bytes)
+}
+
+// EffectiveBytesPerRatio returns the weighted average payload size in bytes
+// across all four tiers plus the ClassNormalExact fallback.
+func (r TierRowV8) EffectiveBytesPerRatio() float64 {
+	if r.Total == 0 {
+		return 0
+	}
+	return float64(r.U8*1+r.U16*2+r.U24*3+r.U32*4+r.F64*8) / float64(r.Total)
+}
+
+// AnalyzeTiersV8 counts how many of the supplied ClassNormal ratios land in
+// each payload tier for the v8 (AdaptiveV7) encoder.
+//
+// The routing logic mirrors gatherRans7v7 exactly so that --analyze output
+// accurately predicts the tier distribution the encoder will produce:
+//
+//   - ratio == 0 or tol == 0         → F64 (ClassNormalExact)
+//   - fastPath fires (deltaB < tol)  → tier by |offset| magnitude only
+//   - per-ratio check fails           → F64 (ClassNormalExact)
+//   - |offset| ≤ 127                 → U8
+//   - |offset| ≤ 32,767              → U16
+//   - |offset| ≤ 8,388,607           → U24
+//   - else                           → U32
+//
+// bits is not capped; it is used as-is (range 1–30) to match the encoder.
+// tol is the fast-path gate (Tolerance in EncodeOptions). Pass math.MaxFloat64
+// to mirror the --sig-figs fast-path behaviour (fastPath always fires).
+func AnalyzeTiersV8(ratios []float64, bits int, tol float64) TierRowV8 {
+	if bits < 1 {
+		bits = 1
+	}
+	if bits > 30 {
+		bits = 30
+	}
+
+	levels := uint32(1) << bits
+	deltaB := math.Pow(2, QuantMaxLog2R/float64(levels)) - 1
+	fastPath := tol > 0 && deltaB < tol
+
+	row := TierRowV8{Epsilon: tol, Bits: bits, Total: len(ratios)}
+	for _, ratio := range ratios {
+		if tol == 0 || ratio == 0 {
+			row.F64++
+			continue
+		}
+		off := QuantizeRatioOffset(ratio, bits)
+		dequant := DequantizeRatioOffset(off, bits)
+		if !fastPath && math.Abs(dequant/ratio-1.0) >= tol {
+			row.F64++
+			continue
+		}
+		absOff := off
+		if absOff < 0 {
+			absOff = -absOff
+		}
+		switch {
+		case absOff <= 127:
+			row.U8++
+		case absOff <= 32767:
+			row.U16++
+		case absOff <= 8388607:
+			row.U24++
+		default:
+			row.U32++
+		}
+	}
+	return row
+}

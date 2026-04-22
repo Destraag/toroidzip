@@ -4,7 +4,7 @@ Scope: PUBLIC — milestone tracker and intent. Committed to git.
         Implementation detail, design rationale, and session notes live
         in PLAN (gitignored, internal only).
 
-## Status: Milestone 10 complete
+## Status: Milestone 15 complete
 
 ---
 
@@ -499,21 +499,51 @@ just wasteful. Payload-cost assertions would have caught it immediately.
 - [x] 13c-ii:  CLI integration test — TestCLISigFigsWiring / TestCLIBytesWiring; guards MaxFloat64 wiring
 - [x] 13d:     Full suite green (188 tests); coverage 80.2%; PLAN/ROADMAP closed
 
-### Milestone 14 — Formalization
+### Milestone 14 — Formalization ✓ COMPLETE
 
-- [ ] 14a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
-- [ ] 14a-ii:  Algorithm writeup — toroidal log₂ quantisation, ε_max derivation,
-               SigFigsToBits algebra; distinction between SigFigs and PrecisionBits
-- [ ] 14a-iii: Algorithm writeup — tiered adaptive (v5/v6/v7), fastPath proof,
-               gatherRans7/AnalyzeTiers invariant; signed-offset encoding rationale
-- [ ] 14a-iv:  Stream format specification (v1–v7 headers, symbol alphabets,
-               payload rules, decode dispatch)
-- [ ] 14a-v:   rANS implementation notes (table-based, normalisation, entropy bound)
-- [ ] 14a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
-- [ ] 14b-i:   Integration guide (library API walkthrough, embed example,
-               document DriftMode C)
-- [ ] 14b-ii:  Benchmark white paper section (M3–M12 results, zstd comparison)
-- [ ] 14b-iii: Publish — tag v1.0.0, push to public remote
+- [x] 14a-0:   Glossary — all overloaded terms defined (ratio, identity, precision,
+               sig figs, tolerance, adaptive, tier, class, anchor, toroidal,
+               fastPath, drift mode, boundary event)
+- [x] 14a-i:   Algorithm writeup — ratio-first encoding, Identity Law, scale invariance
+- [x] 14a-ii:  Toroidal log₂ quantisation — ε_max derivation, SigFigsToBits algebra,
+               SigFigs vs PrecisionBits distinction
+- [x] 14a-iii: Tiered adaptive coding (v7/v8), fastPath proof, signed-offset rationale,
+               precision-relative tier mapping, gatherRans7/AnalyzeTiers invariant
+- [x] 14a-iv:  Stream format specification — v1–v8 headers, symbol alphabets,
+               payload rules, decode dispatch
+- [x] 14a-v:   rANS implementation notes — table-based M=4096, normalisation, entropy bound
+- [x] 14a-vi:  End-to-end sig-figs guarantee — adaptive reanchoring proof, K×ε bound
+- [x] 14b-i:   Library API section in README: Encode/Decode signatures, EncodeOptions
+               fields, convenience helpers, embed examples
+- [x] 14b-ii:  Benchmark section in writeup (Section 7) — M3–M12 harness results,
+               adaptive v7 vs zstd comparison, per-dataset observations
+- [x] --bytes 3 (24-bit / u24 tier) added to encode + analyze CLI paths; README updated
+
+  M14 COMPLETE — writeup Sections 1–7 done; README Library API added; 195 tests passing
+
+### Milestone 15 — Analyzer Correctness ✓ COMPLETE
+
+The existing `AnalyzeTiers` function modelled the pre-v7 3-tier scheme (u16/u32/f64)
+and capped precision at 16 bits. Running `toroidzip analyze -n 6 data.f64` produced
+tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
+
+- [x] 15a-i,ii: TierRowV8 struct + EffectiveBytesPerRatio() with correct 1/2/3/4/8B weights
+- [x] 15b-i:    AnalyzeTiersV8() in analyze.go — mirrors gatherRans7v7 exactly;
+                bits not capped; fastPath same formula; u8/u16/u24/u32/f64 routing
+- [x] 15c-i–v:  analyze subcommand wired to AnalyzeTiersV8; bits>16 cap removed;
+                output labels updated to u8/u16/u24/u32/f64; precision note fixed
+- [x] 15d-i–vii: 7 new TestAnalyzeTiersV8* tests — empty, tol=0, count invariant,
+                smooth→u8, high-precision bits=24, fastPath vs per-ratio, eff-bytes range
+
+  M15 COMPLETE — 195 tests passing; build clean
+
+### Milestone 16 — Pre-Publish Cleanup (NEXT)
+
+- [ ] 16a:    Commit pre-cleanup snapshot (all stream versions intact)
+- [ ] 16b-i:  Remove v1–v6 encoder/decoder code; decode dispatch returns error for v1–v6
+- [ ] 16b-ii: Rename ClassNormal → ClassNormal16 throughout
+- [ ] 16c:    Full verification pass (go vet, staticcheck, all tests, writeup review)
+- [ ] 16d:    Tag and publish v1.0.0
 
 ---
 

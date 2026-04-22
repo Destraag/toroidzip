@@ -1,0 +1,1584 @@
+ToroidZip — Algorithm Writeup
+============================================================
+Status: DRAFT — M14 in progress. Not yet published.
+Scope:  The applied algorithm as implemented. The broader Toroidal
+        Arithmetic theoretical framework is treated in a separate document.
+        See notes/ for the theoretical development.
+============================================================
+
+
+============================================================
+GLOSSARY
+============================================================
+
+  Terms in this document are often overloaded in adjacent fields. Definitions
+  here are precise and scoped to this codebase and writeup only.
+
+  ── Core encoding concepts ──────────────────────────────────────────────────
+
+  value
+    A single float64 element of the input stream x[0], x[1], ..., x[N-1].
+    Not to be confused with a quantised symbol or rANS code word.
+
+  ratio (r[n])
+    The multiplicative residual between adjacent values:
+      r[n] = x[n] / x[n-1]
+    This is the fundamental unit encoded by the codec. Everything downstream
+    operates on ratios, not values. The ratio stream is R = {r[1], ..., r[N-1]}.
+
+  anchor
+    A verbatim float64 value written into the stream to provide an exact
+    reconstruction reference. x[0] is always an anchor. Additional anchors
+    (reanchors) may be inserted mid-stream.
+
+  reanchor
+    The act of emitting a ClassReanchor event: storing the current value
+    verbatim and resetting the reconstruction reference. Reanchors bound
+    accumulated drift. See also: adaptive reanchoring, drift.
+
+  Identity Law
+    The observation that for smooth data, the ratio r[n] = x[n] / x[n-1]
+    is clustered near 1.0 (the multiplicative identity). A ratio of exactly
+    1.0 means "no change". This clustering is the compression opportunity:
+    the rANS model assigns short codewords to near-identity ratios.
+
+  boundary event
+    A value where the ratio is near 0 or ∞ — either because the previous
+    value was near zero (ClassBoundaryZero) or because the current value
+    is at sensor saturation / ±Inf (ClassBoundaryInf). Boundary events
+    are stored with a verbatim float64 payload and encoded as a distinct
+    rANS symbol class.
+
+  ── Precision and accuracy ──────────────────────────────────────────────────
+
+  PrecisionBits (B)
+    The quantisation grid depth: the number of bits used to represent a
+    quantised ratio in log-space. Range: 1–30. This is a technical parameter;
+    users normally set SigFigs instead.
+    Do NOT confuse with: float64 mantissa bits (53), IEEE precision, or the
+    common lay use of "precision" as a synonym for "accuracy".
+
+  SigFigs (N)
+    The user-facing decimal significant figures guaranteed end-to-end.
+    Derived from PrecisionBits via:
+      B = ceil( log2( 4 / (5 × 10^-N) ) )
+    Example: N=4 → B=15, N=5 → B=16, N=6 → B=20.
+    SigFigs and PrecisionBits are NOT the same number and must not be
+    conflated. N=5 does not mean B=5.
+
+  tolerance (ε)
+    The maximum relative reconstruction error guaranteed end-to-end:
+      |x̂[n] - x[n]| / |x[n]| ≤ ε  for all n
+    where x̂[n] is the decoded value.
+    Tolerance is an end-to-end guarantee, not a per-ratio bound.
+    Earlier stream versions (v4/v5) used a per-ratio ε; the distinction
+    is noted explicitly wherever it matters. The CLI flag is --tolerance.
+
+  ε_max(B)
+    The worst-case relative error introduced by quantising a single ratio
+    at PrecisionBits B:
+      ε_max(B) = 2^(R / 2^B) - 1
+    where R = QuantMaxLog2R = 4.0 (the log₂ range [2^-4, 2^4]).
+    This is the maximum per-ratio error before accumulation. Not to be
+    confused with end-to-end tolerance ε.
+
+  ── Quantisation ────────────────────────────────────────────────────────────
+
+  log-space quantisation
+    Ratios are quantised on a uniform grid in log₂ space, not linear space.
+    This is the correct metric for multiplicative data: a ratio of 2.0 is
+    "as far" from 1.0 as a ratio of 0.5, because both represent one doubling.
+    Linear quantisation would over-sample ratios near 1.0 and under-sample
+    ratios far from 1.0.
+
+  quantiser range
+    The interval [2^-R, 2^R] where R = QuantMaxLog2R = 4.0, i.e. [1/16, 16].
+    Ratios outside this range are classified as boundary events. The range
+    was chosen to cover essentially all smooth real-world data (sensor, financial,
+    scientific) while keeping the grid tractable.
+
+  toroidal (clamping)
+    When a ratio falls outside the quantiser range it is clamped to the
+    nearest boundary rather than wrapped. The term "toroidal" comes from
+    the theoretical framework that motivates ratio-first encoding; in
+    practical terms it means the quantiser is a finite interval with hard
+    edges, not a periodic/modular structure. Do not interpret the name as
+    implying periodic boundary conditions.
+
+  signed offset
+    Instead of storing the absolute quantisation index k (an unsigned integer
+    in [0, 2^B)), the codec stores:
+      offset = k - 2^(B-1)
+    so that ratio = 1.0 maps to offset = 0, and smooth steps (ratios near 1.0)
+    produce small signed integers. This allows small offsets to fit in fewer
+    bytes (int8 instead of uint16) even at high PrecisionBits.
+
+  ── Tier routing ────────────────────────────────────────────────────────────
+
+  tier
+    The payload byte-width allocated to a quantised ratio based on its signed
+    offset magnitude. The four tiers are:
+      u8  (ClassNormal8):  |offset| ≤ 127        → 1 byte
+      u16 (ClassNormal):   |offset| ≤ 32,767     → 2 bytes
+      u24 (ClassNormal24): |offset| ≤ 8,388,607  → 3 bytes
+      u32 (ClassNormal32): |offset| ≤ 536,870,912 → 4 bytes
+    The tier a ratio lands in depends on both PrecisionBits and the ratio's
+    distance from 1.0. Smooth data with small steps routes to u8 at any
+    precision; volatile data with large steps routes to u32.
+    Do NOT confuse "tier" with software architecture tiers.
+
+  fastPath
+    An optimisation that fires when the analytical bound ε_max(B) < ε:
+    every ratio within the quantiser range quantises within tolerance, so
+    the per-ratio error check (dequantise → compare → branch) is skipped
+    entirely. For smooth data at typical settings (B=16, ε=1e-4), fastPath
+    always fires. FastPath is a pure encode-side optimisation; the stream
+    format and decoder are unaffected.
+
+  ── Entropy coding ──────────────────────────────────────────────────────────
+
+  symbol class
+    The rANS alphabet symbol assigned to each value in the stream. The
+    current (v7/v8) alphabet has 9 symbols:
+      ClassIdentity, ClassBoundaryZero, ClassBoundaryInf, ClassReanchor,
+      ClassNormal8, ClassNormal (u16), ClassNormal24, ClassNormal32,
+      ClassNormalExact
+    Do NOT confuse "class" with an object-oriented programming class.
+
+  ClassIdentity
+    Assigned when |r[n] - 1.0| < IdentityEpsilon (1e-9). No payload stored;
+    decoder keeps the previous value unchanged. Introduces bounded error ≤
+    IdentityEpsilon × |prev| per step (non-compounding).
+
+  ClassNormalExact
+    Fallback class when the configured-precision quantisation error exceeds
+    tolerance. Stores the ratio verbatim as float64 (8 bytes). Only occurs
+    when fastPath does not fire AND the per-ratio check fails — rare on
+    smooth data, common on high-entropy or volatile data.
+
+  rANS (range Asymmetric Numeral Systems)
+    The entropy coder used to compress the symbol class stream. rANS maps
+    a sequence of symbols drawn from a known frequency distribution to a
+    compact integer state. Parameters: M = 4096 (table scale), L = 2^31
+    (state range [L, 256·L)). The rANS stream is incompressible by further
+    downstream LZ coding (it is already at the entropy bound).
+
+  ── Drift and reanchoring ───────────────────────────────────────────────────
+
+  drift
+    The accumulated relative error between the true value x[n] and the
+    reconstructed value x̂[n] = x̂[0] × r̂[1] × ... × r̂[n], caused by
+    floating-point rounding in repeated multiplication. Drift grows with
+    sequence length and is bounded by reanchoring.
+
+  drift mode
+    The strategy used to mitigate drift. Three modes:
+      DriftReanchor (A): prev tracks original input values. Drift is reset
+        exactly at every reanchor event. Error is bounded by
+        ε_max(B) × reanchorInterval (worst case, same-sign drift).
+      DriftCompensate (B): Kahan log-space accumulation. Tracks and
+        subtracts the running rounding error. Strictly more accurate than
+        A for the same interval; ~3.4× slower.
+      DriftQuantize (C): prev tracks float32-rounded values, mirroring
+        what a float32 decoder would produce. Retained for compatibility;
+        --auto never recommends it.
+
+  adaptive reanchoring
+    Reanchor events fired by a drift check (accumulated error ≥ ε) rather
+    than at a fixed cadence. On smooth data, adaptive reanchoring fires far
+    less often than the fixed interval, improving compression. On adversarial
+    (monotone drift) data, it fires earlier, guaranteeing the end-to-end
+    tolerance even in the worst case. Contrast with fixed reanchoring.
+
+  K_max
+    A circuit-breaker cap on the maximum interval between reanchor events.
+    Currently 10,000 (N-independent). The drift check owns the end-to-end
+    guarantee; K_max is a backstop against degenerate cases (e.g. a stream
+    with ClassIdentity-only ratios that never trigger the drift threshold).
+
+  ── Miscellaneous ───────────────────────────────────────────────────────────
+
+  stream version
+    A single byte in the stream header identifying the encoding format.
+    Versions 1–8 are defined; the decoder dispatches on this byte. See
+    the Stream Format Specification section for per-version details.
+
+  end-to-end guarantee
+    The property that for every decoded value x̂[n]:
+      |x̂[n] - x[n]| / |x[n]| ≤ ε
+    is satisfied by construction — not statistically, not on average, but
+    for every value in every stream encoded with the declared tolerance.
+    The guarantee holds because: (a) the per-ratio quantisation error is
+    bounded by ε_max(B), (b) adaptive reanchoring resets drift before it
+    crosses ε, and (c) ClassNormalExact stores any ratio that fails (a)
+    verbatim. The three mechanisms together are sufficient.
+
+  scale invariance
+    The property that the codec's accuracy is independent of the absolute
+    magnitude of the values. A ratio r[n] = x[n] / x[n-1] is the same
+    whether x[n] = 1e-6 or x[n] = 1e6. This is the primary advantage over
+    additive delta coding (used by SZ3/Lorenzo), which must be tuned to
+    the value range.
+
+
+============================================================
+1. RATIO-FIRST ENCODING — MATHEMATICAL BASIS
+============================================================
+
+1.1  The Ratio Transform
+─────────────────────────
+
+  Let X = (x[0], x[1], ..., x[N-1]) be a sequence of non-zero real values.
+  Define the ratio stream R = (r[1], r[2], ..., r[N-1]) by:
+
+      r[n] = x[n] / x[n-1]    for n = 1, 2, ..., N-1
+
+  The pair (x[0], R) is an exact alternative representation of X. Given x[0]
+  and R, the original sequence is recovered by the telescoping product:
+
+      x[n] = x[0] × r[1] × r[2] × ... × r[n]    (exact reconstruction)
+
+  This follows immediately from the definition: the intermediate terms cancel.
+  No approximation is introduced by the transform itself.
+
+  The motivating observation: for smooth numerical data — sensor readings,
+  financial prices, scientific measurements — consecutive values tend to
+  change by a small fraction of their current magnitude. The ratio r[n] is
+  therefore clustered near 1.0. The distribution of R is far tighter than the
+  distribution of X, which may span many orders of magnitude. A tighter
+  distribution means shorter average codeword lengths under entropy coding.
+
+
+1.2  Why Multiplicative, Not Additive
+──────────────────────────────────────
+
+  The natural alternative is additive delta coding:
+
+      d[n] = x[n] - x[n-1]
+
+  used by SZ3, Lorenzo predictors, and most general-purpose time-series
+  compressors. Delta coding is well-suited to data with bounded absolute
+  variation. It fails on multi-scale data: if x[n] ranges from 1e-6 to 1e6,
+  the deltas span 12 orders of magnitude and a quantiser tuned to one range
+  is useless at another.
+
+  The ratio r[n] = x[n] / x[n-1] is dimensionless and scale-invariant.
+  Formally: for any non-zero constant c,
+
+      (c·x[n]) / (c·x[n-1]) = x[n] / x[n-1]
+
+  Multiplying all values by c (a change of units, a scaling of the sensor
+  range, a different physical quantity) leaves every ratio unchanged. The
+  codec's quantisation grid, tier routing, and rANS model are all invariant
+  under global rescaling. This is not true of any additive scheme.
+
+  Scale invariance is the primary reason ratio-first encoding outperforms
+  delta coding on data that spans multiple orders of magnitude. The M4
+  benchmark results confirm this: on the MultiScale dataset (values spanning
+  12 decades, 1e-6 to 1e6), ToroidZip at 4 sig figs achieves a compression
+  ratio of 0.26, compared to 0.85 for brotli (lossless). On the same dataset,
+  delta-based compressors struggle to beat uncompressed.
+
+
+1.3  Identity Law and Exact Recovery
+──────────────────────────────────────
+
+  Define the Identity Ratio as r[n] = 1.0, corresponding to x[n] = x[n-1]
+  exactly (no change between consecutive values). More generally, define the
+  identity region as the set of ratios for which x[n] and x[n-1] are
+  indistinguishable at the declared precision.
+
+  For smooth data, the Identity Law is the empirical observation that the
+  identity region dominates the ratio distribution — the most probable state
+  is "no significant change". This is the compression hypothesis: if the rANS
+  model assigns short codewords to near-identity ratios, the class stream
+  compresses well.
+
+  Exact recovery from any anchor point follows from the telescoping property.
+  Given an anchor x[k] stored verbatim and the subsequent ratios r[k+1], ...,
+  r[n], the decoder reconstructs:
+
+      x[n] = x[k] × r[k+1] × r[k+2] × ... × r[n]
+
+  Proof by induction:
+    Base case n = k+1:
+      x[k] × r[k+1] = x[k] × (x[k+1] / x[k]) = x[k+1]  ✓
+    Inductive step: assume x[k] × r[k+1] × ... × r[m] = x[m].
+      Then × r[m+1] = x[m] × (x[m+1] / x[m]) = x[m+1]  ✓
+
+  This holds regardless of the distance from the anchor. The only requirement
+  is that each ratio r[i] was computed and stored correctly. In lossless mode
+  (ClassNormalExact for every ratio), this is satisfied exactly. In quantised
+  or adaptive mode, each r̂[i] is an approximation to r[i], introducing bounded
+  per-ratio error; see Section 4 (End-to-End Guarantee) for the analysis of
+  how this accumulates.
+
+
+1.4  The Quantisation Range [1/16, 16]
+────────────────────────────────────────
+
+  The codec quantises ratios on a uniform log₂ grid over the interval
+  [2^-R, 2^R] where R = 4.0. In absolute terms this is [1/16, 16].
+
+  Interpretation: a ratio of 16 means the value increased 16-fold in a single
+  step (a 1500% increase). A ratio of 1/16 means the value fell to 1/16 of
+  its previous value (a 94% decrease). In practice, consecutive samples of
+  smooth real-world data almost never move by this much in a single step.
+
+  This is confirmed by the M3 benchmark data: across all six tested dataset
+  classes (sensor, financial, multi-scale, volatile, near-constant, neural
+  weights), 99.8% of ratios fell within [1/16, 16]. The 0.2% that exceed the
+  range are boundary events — zero crossings, sensor saturation, regime
+  changes — and are stored verbatim with a dedicated symbol class.
+
+  The choice R = 4 is a design parameter, not a mathematical necessity. A
+  larger R covers more ratios as ClassNormal but increases the quantisation
+  step size at a given PrecisionBits B. A smaller R tightens the grid but
+  classifies more ratios as boundary events. R = 4 is the empirically
+  validated choice for the target data classes; the constant QuantMaxLog2R
+  is exposed for research purposes.
+
+  Note on log₂ vs linear quantisation: the grid is uniform in log₂ space,
+  meaning consecutive quantisation boundaries are in a constant ratio, not
+  at a constant absolute distance. The step from index k to k+1 represents
+  the same multiplicative change regardless of the ratio magnitude. This is
+  the correct metric for multiplicative data — the same reason that musical
+  intervals are defined by frequency ratios, not frequency differences. See
+  Section 2 (Toroidal Quantisation) for the derivation of ε_max(B).
+
+
+1.5  Boundary Events
+─────────────────────
+
+  Two special cases fall outside the normal ratio model:
+
+  ClassBoundaryZero: x[n-1] ≈ 0, making the ratio x[n] / x[n-1] ill-defined
+    or infinite. The encoder detects this condition and stores x[n] verbatim.
+    The decoder resets its running product to x[n] exactly. This also handles
+    true zero values (e.g. a sensor reading that goes to exactly 0).
+
+  ClassBoundaryInf: |r[n]| > 2^R (the ratio exceeds the quantiser range).
+    The encoder detects this and stores x[n] verbatim. The decoder treats it
+    as a reanchor — subsequent reconstruction continues from x[n] exactly.
+
+  In both cases the verbatim value is stored as 8 bytes (float64). The rANS
+  class stream records the class symbol so the decoder knows to read a payload.
+  Boundary events do not disturb the running rANS state; they are transparent
+  to the entropy model.
+
+
+============================================================
+2. TOROIDAL QUANTISATION
+============================================================
+
+2.1  The Log₂ Grid
+───────────────────
+
+  To encode a ratio r[n] compactly, it must be mapped to a finite symbol
+  drawn from a discrete alphabet. This mapping is quantisation. The codec
+  uses a uniform grid in log₂ space over the range [-R, R] where R = 4.0.
+
+  Formally, define the quantisation function Q: (0, ∞) → {0, 1, ..., 2^B - 1}:
+
+      Q(r, B) = clamp( floor( (log₂(r) + R) × 2^B / (2R) ), 0, 2^B - 1 )
+
+  and its inverse, the dequantisation function Q⁻¹:
+
+      Q⁻¹(k, B) = 2^( k × (2R / 2^B) - R )
+
+  The grid has 2^B evenly spaced steps in log₂ space, each of width:
+
+      step = 2R / 2^B = 8 / 2^B  (in log₂ units)
+
+  For example, at B = 16: step = 8 / 65536 ≈ 1.22 × 10⁻⁴ (log₂ units).
+
+  The reconstruction Q⁻¹(Q(r, B)) is the nearest grid point to r in log₂
+  space. The maximum error between r and its reconstruction is half the step
+  size (by the standard nearest-neighbour quantisation argument), but since
+  we use floor rather than round, the bound is the full step width.
+
+
+2.2  Derivation of ε_max(B)
+─────────────────────────────
+
+  The relative error introduced by quantising ratio r at precision B is:
+
+      relErr(r, B) = | Q⁻¹(Q(r, B)) - r | / r
+
+  The worst case occurs at the top of any grid interval, where the floor
+  operation introduces the maximum absolute error. For a ratio r at the top
+  of a grid cell of width step = 2R/2^B in log₂ space:
+
+      Q⁻¹(k+1, B) / Q⁻¹(k, B) = 2^step = 2^(2R / 2^B)
+
+  The maximum relative error of any ratio in the grid cell [Q⁻¹(k), Q⁻¹(k+1))
+  is therefore bounded by:
+
+      ε_max(B) = 2^(2R / 2^B) - 1
+
+  With R = 4.0:
+
+      ε_max(B) = 2^(8 / 2^B) - 1
+
+  This is a monotonically decreasing function of B. Selected values:
+
+      B =  8:  ε_max ≈ 3.0 × 10⁻²   (≈2 sig figs)
+      B = 10:  ε_max ≈ 7.7 × 10⁻³   (≈3 sig figs)
+      B = 13:  ε_max ≈ 9.5 × 10⁻⁴   (≈4 sig figs)
+      B = 15:  ε_max ≈ 2.4 × 10⁻⁴   (≈4 sig figs)
+      B = 16:  ε_max ≈ 1.2 × 10⁻⁴   (≈5 sig figs)
+      B = 20:  ε_max ≈ 7.6 × 10⁻⁶   (≈6 sig figs)
+      B = 23:  ε_max ≈ 9.5 × 10⁻⁷   (≈7 sig figs)
+      B = 30:  ε_max ≈ 7.5 × 10⁻⁹   (≈9 sig figs)
+
+  Note: ε_max(B) is the per-ratio bound, not the end-to-end bound. Accumulated
+  error across a sequence is addressed by reanchoring; see Section 4.
+
+
+2.3  SigFigs to PrecisionBits Derivation
+──────────────────────────────────────────
+
+  The user requests N significant figures. The required PrecisionBits B is
+  the smallest B such that the per-ratio error satisfies:
+
+      ε_max(B) < 5 × 10^-N
+
+  (The threshold 5 × 10^-N is the half-unit-in-the-last-place criterion for
+  N decimal digits: a result rounded to N sig figs has absolute error ≤
+  0.5 × 10^-(N-1) = 5 × 10^-N relative to its leading digit.)
+
+  Solving ε_max(B) < 5 × 10^-N:
+
+      2^(8 / 2^B) - 1 < 5 × 10^-N
+      2^(8 / 2^B)     < 1 + 5 × 10^-N
+      8 / 2^B          < log₂(1 + 5 × 10^-N)
+      2^B              > 8 / log₂(1 + 5 × 10^-N)
+      B                > log₂( 8 / log₂(1 + 5 × 10^-N) )
+
+  Taking the ceiling:
+
+      B = ceil( log₂( 8 / log₂(1 + 5 × 10^-N) ) )
+
+  For small x, log₂(1+x) ≈ x / ln(2), so this simplifies approximately to:
+
+      B ≈ ceil( log₂( 8 ln(2) / (5 × 10^-N) ) )
+        = ceil( log₂(8) + log₂(ln 2) + N log₂(10) - log₂(5) )
+        ≈ ceil( 2.47 + N × 3.322 )
+
+  Exact values (using the precise formula):
+
+      N = 1 → B = 3     N = 4 → B = 15    N = 7 → B = 23
+      N = 2 → B = 6     N = 5 → B = 16    N = 8 → B = 26
+      N = 3 → B = 10    N = 6 → B = 20    N = 9 → B = 30
+
+  Important: N and B are not the same number. In particular, N = 5 → B = 16,
+  not B = 5. Conflating them is a source of bugs; the codebase consistently
+  uses SigFigsToBits(N) and BitsToSigFigs(B) for all conversions.
+
+  Also important: the per-ratio precision B is chosen to satisfy the per-ratio
+  bound. The end-to-end sig-figs guarantee requires additional machinery
+  (adaptive reanchoring) described in Section 4.
+
+
+2.4  Signed Offset Representation
+───────────────────────────────────
+
+  The raw quantisation index k = Q(r, B) is an unsigned integer in [0, 2^B).
+  For a ratio near 1.0, k ≈ 2^(B-1) (the midpoint of the grid). Storing k
+  directly wastes bytes: even a tiny step r = 1.0001 at B = 16 produces
+  k = 32,769, which requires a uint16 (2 bytes).
+
+  The signed offset representation centres the grid at zero:
+
+      offset = k - 2^(B-1)
+
+  so that r = 1.0 → offset = 0, and nearby ratios produce small signed
+  integers. The magnitude of the offset reflects how far the ratio deviates
+  from identity:
+
+      r = 1.0001, B = 16: k ≈ 32,769  → offset ≈      1  (fits in int8, 1 byte)
+      r = 1.001,  B = 16: k ≈ 33,502  → offset ≈    734  (fits in int16, 2 bytes)
+      r = 1.01,   B = 16: k ≈ 40,267  → offset ≈  7,499  (fits in int16, 2 bytes)
+      r = 1.1,    B = 16: k ≈ 57,762  → offset ≈ 24,994  (fits in int16, 2 bytes)
+      r = 2.0,    B = 16: k ≈ 65,536  → offset ≈ 32,768  (requires int32, 4 bytes)
+
+  The tier routing decision (Section 3.2) uses the offset magnitude to select
+  the smallest container that holds the offset exactly. This is the primary
+  source of compression gain on smooth data: sensor readings with r ≈ 1.0001
+  cost 1 byte each instead of 2, a 50% payload saving.
+
+  Dequantisation from a stored offset is:
+
+      Q⁻¹(offset + 2^(B-1), B) = 2^( (offset + 2^(B-1)) × (8 / 2^B) - 4 )
+
+  The signed offset encoding is the key innovation introduced in stream
+  versions v6 (for adaptive) and v4-quantized/v7-adaptive (the current
+  encoding). It is not present in stream versions v1–v5.
+
+
+2.5  Why "Toroidal"
+────────────────────
+
+  The quantiser boundary behaviour is clamping: a ratio r < 1/16 is mapped
+  to index 0 (the minimum), and r > 16 is mapped to index 2^B - 1 (the
+  maximum). No wrapping occurs. In this sense the quantiser is not literally
+  toroidal — it has hard edges.
+
+  The name comes from the theoretical framework that motivated ratio-first
+  encoding. In that framework, the identity element (ratio = 1.0) and the
+  boundary elements (ratio → 0 and ratio → ∞) are conceived as a structure
+  where zero and infinity are identified as the same absolute boundary — the
+  two "poles" of the multiplicative number line become a single point when
+  the line is bent into a closed curve. A torus is the natural topological
+  object that emerges when this construction is extended to two dimensions.
+
+  For the purposes of this codec: the "toroidal" label accurately describes
+  the treatment of the quantiser boundaries as a unified class (boundary
+  events) rather than two separate out-of-range conditions. The geometric
+  intuition — that 0 and ∞ are "the same kind of problem" for a ratio codec
+  — is sound and guides the implementation. The full theoretical development
+  is in a separate document.
+
+
+============================================================
+3. TIERED ADAPTIVE CODING
+============================================================
+
+  The core encoding problem is: given a ratio r[n], choose the smallest
+  number of bytes that faithfully represents it at the declared precision.
+  Sections 1 and 2 establish what "faithfully" means. This section describes
+  how the byte-width decision is made and how it evolved across stream versions.
+
+
+3.1  Why Tiers?
+────────────────
+
+  A ratio quantised to PrecisionBits B produces a signed offset in
+  [-2^(B-1), 2^(B-1)]. The full range requires ceil(B/8) bytes — 2 bytes for
+  B ≤ 16, 4 bytes for B ≤ 30. But most ratios in smooth data produce offsets
+  far smaller than the maximum. A sensor reading that changes by 0.01% per
+  step produces an offset of ~1 at B=16. Allocating 2 bytes for it wastes 1.
+
+  The tier system allocates only as many bytes as the offset actually needs:
+
+      |offset| ≤ 127         → 1 byte  (int8,  ClassNormal8)
+      |offset| ≤ 32,767      → 2 bytes (int16, ClassNormal)
+      |offset| ≤ 8,388,607   → 3 bytes (int24, ClassNormal24)
+      |offset| ≤ 536,870,911 → 4 bytes (int32, ClassNormal32)
+
+  The rANS class stream records which tier each ratio used, so the decoder
+  knows how many bytes to read. The class symbol costs a fraction of a bit
+  (amortised across the rANS stream); the payload savings are always net-positive
+  unless the data is adversarially constructed to maximise tier changes.
+
+
+3.2  Tier Routing Decision
+───────────────────────────
+
+  For each ClassNormal ratio the encoder computes:
+
+      k      = Q(r[n], B)                  // quantise to [0, 2^B)
+      offset = k - 2^(B-1)                 // centre at zero
+      class  = tier(|offset|)              // route to u8/u16/u24/u32
+
+  The tier() function is a simple threshold test on |offset|; no floating-point
+  operations are required after the initial QuantizeRatioOffset call.
+
+  The decoder mirrors this exactly:
+
+      offset = read int8/int16/int24/int32 per class symbol
+      k      = offset + 2^(B-1)
+      r̂[n]  = Q⁻¹(k, B)                  // dequantise back to ratio
+      x̂[n]  = x̂[n-1] × r̂[n]             // reconstruct value
+
+
+3.3  The fastPath Optimisation
+───────────────────────────────
+
+  The adaptive (v7/v8) stream has an additional per-ratio decision: should
+  this ratio be stored quantised, or stored exactly as float64 (ClassNormalExact)?
+  The exact path is taken when the quantisation error exceeds the declared
+  end-to-end tolerance ε. Checking this naively requires dequantising the
+  ratio and computing the relative error — two transcendental operations
+  (log + exp) per ratio.
+
+  The fastPath avoids this entirely. Observe that ε_max(B) (Section 2.2) is
+  an upper bound on the relative error for ANY ratio at precision B. Therefore:
+
+      if ε_max(B) < ε: every ratio quantises within tolerance → skip check
+
+  ε_max(B) is computed once before the encoding loop as a constant:
+
+      delta = 2^(8 / 2^B) - 1
+
+  If delta < ε (the declared end-to-end tolerance), the per-ratio error check
+  is bypassed for the entire stream. For smooth data at typical settings
+  (B=16, ε=1e-4): delta ≈ 1.2×10⁻⁴ < 1e-4 — fastPath fires, and the
+  log+exp pair is never called. Encode throughput improves ~5% on smooth data.
+
+  When fastPath does not fire (tight tolerance or high-entropy data), each
+  ratio is individually tested. Any ratio failing the check takes the
+  ClassNormalExact path (verbatim float64, 8 bytes). This is the correct
+  fallback: the stream is accurate by construction regardless of the data.
+
+  FastPath is a pure encoder optimisation. The stream format and decoder are
+  identical whether fastPath fired or not — the decoder simply reads whatever
+  class symbols the encoder wrote.
+
+  Important invariant: the fastPath condition (delta < ε) is checked
+  identically in both the encoder (gatherRans7v7) and the analysis tool
+  (AnalyzeTiers). This ensures that --analyze output accurately predicts
+  the tier distribution that the encoder will produce.
+
+
+3.4  Stream Version Evolution
+──────────────────────────────
+
+  The tiered system was not present from the beginning. It evolved across
+  stream versions as the right representation became clear from benchmarking.
+  A brief history is useful for understanding why the current design is what
+  it is.
+
+  v1 (raw): No entropy coding. Every value stored as 8 bytes verbatim.
+    Serves as the uncompressed baseline for ratio calculations.
+
+  v2 (lossless): 5-symbol rANS alphabet. ClassNormal carries a full float64
+    ratio payload (8 bytes). ClassIdentity carries nothing. Effective only
+    when a significant fraction of ratios are identity.
+
+  v3 (quantized): ClassNormal payload replaced with uint16 absolute index
+    (2 bytes at B≤16) or uint32 (4 bytes at B>16). Fixed size per class —
+    no tier routing, no signed offset. All smooth ratios pay 2 bytes at
+    B=16 regardless of step size.
+
+  v4 (adaptive): 6-symbol alphabet adds ClassNormalExact. Per-ratio ε check
+    decides between uint16 (compact) and float64 (exact). The tier concept
+    is present but only has two options (quantised or exact). Per-ratio ε
+    is the tolerance, not end-to-end — a design flaw corrected in M9.
+
+  v5 (adaptive, 7-symbol): Adds ClassNormal32 as a third option between
+    uint16 and float64. Ratios that fail 16-bit tolerance but pass 30-bit
+    tolerance pay 4 bytes instead of 8. Still uses absolute index (not
+    signed offset), still clamps PrecisionBits to 16 for the u16 tier.
+
+  v6 (adaptive, signed offset): Switches to signed offset representation at
+    a fixed 30-bit precision. Near-identity ratios now fit in int16 even at
+    30-bit precision (e.g. r=1.0001 → offset≈19,363 at 30-bit, which fits
+    int16). PrecisionBits is ignored — always 30-bit. Saves ~50% on
+    near-constant data.
+
+  v3-quantized (stream byte 7, QuantizedV2): Applies signed offset to the
+    quantized stream with a full 4-tier u8/u16/u24/u32 routing. Introduces
+    ClassNormal8 and ClassNormal24. 9-symbol alphabet. PrecisionBits is
+    respected. Near-constant data at B=13: 100% u8, 50% saving over v3.
+
+  v7-adaptive (stream byte 8, AdaptiveV7, current): The final design.
+    - Signed offset at configured PrecisionBits (not fixed 30-bit, not capped 16)
+    - Full 4-tier routing: u8/u16/u24/u32 per offset magnitude
+    - fastPath: skip per-ratio check when ε_max(B) < ε
+    - ClassNormalExact fallback for ratios that fail the tolerance check
+    - 9-symbol alphabet shared with QuantizedV2
+
+  Each stream version is decodeable via the version byte in the header; the
+  decoder dispatches on this byte and handles all formats produced during
+  development. The encoder only produces the current format (stream byte 8,
+  AdaptiveV7, or byte 7, QuantizedV2). No backward compatibility guarantee
+  is made to external users — none exist at this stage of the project.
+
+
+3.5  Precision-Relative Tiers
+──────────────────────────────
+
+  The key insight of v7-adaptive over all prior versions: the tier a ratio
+  lands in should reflect the precision requested, not be fixed at 30-bit
+  regardless of configuration.
+
+  At a given PrecisionBits B, the maximum possible signed offset is 2^(B-1).
+  For smooth data (ratios near 1.0), the typical offset is much smaller. The
+  relationship between B and the dominant tier for smooth data:
+
+      B = 13 (4 sig figs): max offset = 4,096    → typical smooth offset ≈ 1-10  → u8
+      B = 16 (5 sig figs): max offset = 32,768   → typical smooth offset ≈ 1-100 → u8/u16
+      B = 20 (6 sig figs): max offset = 524,288  → typical smooth offset ≈ 1-1000 → u8/u16
+      B = 30 (9 sig figs): max offset = 536M     → typical smooth offset varies → u16/u24
+
+  The u24 tier (3 bytes) fills the gap at 6–7 sig figs that would otherwise
+  force all ratios to u32 (4 bytes). Without it, any precision request above
+  5 sig figs (B>16) pays 4 bytes per ratio even for ratios whose offsets fit
+  in 3 bytes. The u24 tier was measured to capture 35% of NeuralWeight ratios
+  at sf=6 that would otherwise pay u32.
+
+  Benchmark result (TestAdaptiveV7OffsetSavings, n=50,000):
+    Sensor, sf=4 (B=13):    100% u8   → 49,999 bytes  vs v6 30-bit: 199,500 bytes  (-75%)
+    Sensor, sf=6 (B=20):    u8+u16    → 83,039 bytes  vs v6 30-bit: 191,376 bytes  (-57%)
+    NearConstant, sf=4:     100% u8   → 49,999 bytes  vs v6 30-bit: 197,536 bytes  (-75%)
+
+  These savings are not incremental tuning — they reflect eliminating a
+  structural mismatch between the requested precision and the storage
+  representation. v6's fixed 30-bit precision stored offsets of 19,363 for
+  steps that a precision-aware encoder would store as 1.
+
+
+============================================================
+4. STREAM FORMAT SPECIFICATION
+============================================================
+
+  All multi-byte integers are little-endian. float64 values are IEEE 754
+  binary64 little-endian. The stream begins with a 4-byte magic sequence
+  followed immediately by a version byte; the rest of the header and the
+  body structure depend on the version.
+
+  Magic: 'T' 'Z' 'R' 'Z'  (0x54 0x5A 0x52 0x5A)
+
+  DriftMode byte values:
+      0 = DriftReanchor  (mode A)
+      1 = DriftCompensate (mode B)
+      2 = DriftQuantize  (mode C)
+
+
+4.1  Symbol Class Byte Values
+──────────────────────────────
+
+  The rANS alphabet is a set of symbol classes. Each class has a fixed byte
+  value used in the class stream and as the rANS symbol index. Values are
+  assigned by the iota sequence in boundary.go:
+
+      0  ClassIdentity      no payload
+      1  ClassNormal        signed offset payload (size depends on version)
+      2  ClassBoundaryZero  float64 payload (8 bytes)
+      3  ClassBoundaryInf   float64 payload (8 bytes)
+      4  ClassReanchor      float64 payload (8 bytes)
+      5  ClassNormalExact   float64 payload (8 bytes)   [v4+ only]
+      6  ClassNormal32      signed int32 payload (4 bytes)  [v5+ only]
+      7  ClassNormal8       signed int8 payload (1 byte)    [v7/v8 only]
+      8  ClassNormal24      signed int24 payload (3 bytes)  [v7/v8 only]
+
+  Not all classes appear in all stream versions. The alphabet size determines
+  which rANS variant is used (RansFreqs5 for v1–v3, RansFreqs6 for v4,
+  RansFreqs7 for v5–v6, RansFreqs9 for v7–v8).
+
+  ClassNormal naming note: ClassNormal retains its original name from v1,
+  where it carried a full float64 ratio payload (not 16 bits). In v2 it
+  also carries float64. In v3 the payload width varies with B (uint8,
+  uint16, uint24, or uint32). From v4 onward ClassNormal is always 2 bytes
+  wide; the interpretation changes from absolute index (v4/v5) to signed
+  offset (v6+). Versions v1–v3 are decode-supported but not produced by
+  the current encoder.
+
+
+4.2  Version 1 — Raw (EntropyRaw)
+───────────────────────────────────
+
+  Header (18 bytes):
+      offset  size  field
+           0     4  magic ('T','Z','R','Z')
+           4     1  version = 1
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE) — number of values encoded
+
+  Body:
+      [anchor: float64 (8 bytes)]
+      for each value after the first:
+          [class_byte (1 byte)]
+          [float64 payload (8 bytes)]   ← always present regardless of class
+
+  No entropy coding. Every value costs exactly 9 bytes (1 class + 8 float64).
+  Used as uncompressed baseline.
+
+
+4.3  Version 2 — Lossless (EntropyLossless)
+─────────────────────────────────────────────
+
+  Header (38 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 2
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18    20  ransFreqs (5 × uint32 LE) — rANS frequency table
+
+  Body:
+      [ransLen: uint32 LE] — byte length of the rANS class stream
+      [rANS class stream: ransLen bytes] — encoded in reverse, byte-reversed
+      [anchor: float64 (8 bytes)]
+      [payloads: concatenated per-class payloads in forward order]
+          ClassIdentity:     no payload
+          ClassNormal:       float64 ratio (8 bytes)
+          ClassBoundaryZero: float64 value (8 bytes)
+          ClassBoundaryInf:  float64 value (8 bytes)
+          ClassReanchor:     float64 value (8 bytes)
+
+  5-symbol rANS alphabet. ClassIdentity costs ~log₂(1/p) bits in the class
+  stream; all other classes cost 8 bytes payload.
+
+
+4.4  Version 3 — Quantized (EntropyQuantized)
+───────────────────────────────────────────────
+
+  Header (39 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 3
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    20  ransFreqs (5 × uint32 LE)
+
+  Body: same structure as v2.
+  ClassNormal payload:
+      B ≤ 8:  uint8  (1 byte) — absolute quantisation index
+      B ≤ 16: uint16 LE (2 bytes) — absolute quantisation index
+      B ≤ 24: uint24 LE (3 bytes) — absolute quantisation index
+      else:   uint32 LE (4 bytes) — absolute quantisation index
+
+  Absolute index (not signed offset). No tier routing beyond payload width.
+  No ClassNormalExact. Every ClassNormal ratio is quantised at B bits.
+
+
+4.5  Version 4 — Adaptive (EntropyAdaptive, superseded)
+─────────────────────────────────────────────────────────
+
+  Header (40 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 4
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    24  ransFreqs6 (6 × uint32 LE)
+
+  Body: same rANS body structure.
+  ClassNormal payload: uint16 LE (2 bytes) — absolute index, B capped at 16
+  ClassNormalExact payload: float64 (8 bytes) — verbatim ratio
+  ClassNormal32: not present in v4.
+
+  Per-ratio ε check (not end-to-end). Superseded by v5.
+  Decode supported; encode no longer produced.
+
+
+4.6  Version 5 — Adaptive V5 (7-symbol, superseded)
+──────────────────────────────────────────────────────
+
+  Header (43 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 5
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    28  ransFreqs7 (7 × uint32 LE)
+
+  Body: same rANS body structure.
+  ClassNormal payload:    uint16 LE (2 bytes) — absolute index, B capped at 16
+  ClassNormal32 payload:  uint32 LE (4 bytes) — absolute index, always 30-bit
+  ClassNormalExact payload: float64 (8 bytes)
+
+  Absolute index (not signed offset). PrecisionBits clamped to 16 for
+  ClassNormal tier. Superseded by v6/v7. Decode supported; encode no longer produced.
+
+
+4.7  Version 6 — Adaptive V6 (signed offset, superseded)
+──────────────────────────────────────────────────────────
+
+  Header (43 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 6
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (stored as 30; always 30-bit in v6)
+          19    28  ransFreqs7 (7 × uint32 LE)
+
+  Body: same rANS body structure.
+  ClassNormal payload:    int16 LE (2 bytes) — signed offset from 30-bit centre
+  ClassNormal32 payload:  int32 LE (4 bytes) — signed offset from 30-bit centre
+  ClassNormalExact payload: float64 (8 bytes)
+
+  Signed offset; 30-bit precision fixed regardless of precisionBits field.
+  PrecisionBits ignored by encoder. Decode supported; encode no longer produced.
+
+
+4.8  Version 7 — QuantizedV2 (9-symbol offset tiers, current quantized)
+─────────────────────────────────────────────────────────────────────────
+
+  Header (55 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 7
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    36  ransFreqs9 (9 × uint32 LE)
+
+  Body: same rANS body structure.
+  ClassNormal8  payload: int8   (1 byte)  — signed offset, |offset| ≤ 127
+  ClassNormal   payload: int16 LE (2 bytes) — signed offset, |offset| ≤ 32,767
+  ClassNormal24 payload: int24 LE (3 bytes, little-endian signed)
+  ClassNormal32 payload: int32 LE (4 bytes) — signed offset
+
+  All offsets: offset = Q(r, B) - 2^(B-1). Dequantise: Q⁻¹(offset + 2^(B-1), B).
+  No ClassNormalExact (quantized mode: every ClassNormal ratio is quantised).
+  PrecisionBits respected; tier selected by |offset| magnitude.
+  Current encoder output for EntropyQuantized.
+
+
+4.9  Version 8 — AdaptiveV7 (9-symbol offset tiers, current adaptive)
+───────────────────────────────────────────────────────────────────────
+
+  Header (55 bytes):
+      offset  size  field
+           0     4  magic
+           4     1  version = 8
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    36  ransFreqs9 (9 × uint32 LE)
+
+  Body: same rANS body structure.
+  ClassNormal8  payload: int8   (1 byte)
+  ClassNormal   payload: int16 LE (2 bytes)
+  ClassNormal24 payload: int24 LE (3 bytes)
+  ClassNormal32 payload: int32 LE (4 bytes)
+  ClassNormalExact payload: float64 (8 bytes) — verbatim ratio
+
+  Identical header and payload rules to version 7, with ClassNormalExact added.
+  ClassNormalExact is emitted when the per-ratio tolerance check fails (i.e.
+  fastPath did not fire and ε_max(B) ≥ ε for this specific ratio).
+  PrecisionBits respected; offsets computed at configured B.
+  Current encoder output for EntropyAdaptive.
+
+
+4.10  rANS Body Layout
+───────────────────────
+
+  The rANS body is the same structure for all versions v2–v8:
+
+      [ransLen: uint32 LE]        — byte count of the compressed class stream
+      [rANS stream: ransLen bytes] — class symbols entropy-coded in reverse,
+                                     output bytes then reversed before writing
+      [anchor: float64 LE]        — x[0] verbatim
+      [payload stream]            — per-symbol payloads in forward order,
+                                     concatenated without separators
+
+  The decoder reads the rANS stream first (to recover all class symbols),
+  then walks the payload stream in order, consuming the correct number of
+  bytes per class symbol. The class symbols and payload stream are in the
+  same forward order; only the rANS encoding is reversed.
+
+  rANS parameters (all versions):
+      ransScaleBits = 12          M = 4096
+      L = 2^31                   state range: [L, 256·L)
+      byte-level I/O
+      normalisation: zero-frequency symbols promoted to freq=1
+                     frequencies then normalised to sum to M
+
+
+============================================================
+5. rANS IMPLEMENTATION NOTES
+============================================================
+
+  The rANS coder is a self-contained unit (rans.go) that knows nothing about
+  the ToroidZip stream format. It receives a sequence of class symbol bytes
+  and a frequency table; it produces a compact byte stream. The integration
+  with the codec (header writing, payload concatenation) lives in codec.go.
+
+
+5.1  Algorithm Summary
+───────────────────────
+
+  rANS (range Asymmetric Numeral Systems) is a member of the ANS family of
+  entropy coders introduced by Jarek Duda. It encodes a sequence of symbols
+  drawn from a known probability distribution into a single large integer
+  state x, which is then serialised as a byte stream. The key property: the
+  number of bits consumed per symbol approaches the Shannon entropy H(p) of
+  the distribution, with no per-symbol overhead.
+
+  The state x is maintained in a normalised range [L, b·L) where b = 256
+  (byte granularity). For encoding, x is driven into a pre-encode range
+  before each symbol step by flushing low bytes. For decoding, x is
+  replenished by absorbing bytes after each symbol step.
+
+  Encode step for symbol s with frequency f and cumulative frequency c
+  (where all frequencies sum to M):
+
+      pre-encode range: [L·f/M, b·L·f/M)
+      while x ≥ (L >> scaleBits) × b × f:
+          emit byte(x); x >>= 8          // renormalise
+      x = (x / f) × M + c + (x mod f)   // encode
+
+  Decode step:
+
+      slot = x mod M
+      s    = decode_table[slot]          // symbol lookup
+      x    = f × (x >> scaleBits) + slot - c  // decode (inverse of encode)
+      while x < L:
+          x = (x << 8) | next_byte()    // renormalise
+
+  The encode and decode steps are exact inverses; no approximation is
+  introduced by the entropy coder itself.
+
+
+5.2  Parameters and Rationale
+───────────────────────────────
+
+  ransScaleBits = 12   →   M = 4096
+
+  M is the total frequency table size. It controls the resolution of the
+  probability model: a symbol with true probability p is represented with
+  frequency f = round(p × M), giving a quantised probability p̂ = f/M.
+  The model mismatch cost is O(M^-2) bits per symbol, negligible at M=4096.
+
+  Larger M reduces model mismatch but increases the decode table size
+  (M bytes for the decode slot→symbol map). At M=4096 the decode table is
+  4096 bytes — fits comfortably in L1 cache. At M=65536 it is 64 KB, which
+  would pressure L1 on every decode call. M=4096 is the standard choice for
+  byte-granular rANS on modern hardware.
+
+  L = 2^31   →   state range [L, 256·L) = [2^31, 2^39)
+
+  L is chosen so that the state fits in a 64-bit integer throughout (max
+  state = 256·L - 1 < 2^40). Byte-granular renormalisation (b=256) means
+  each normalisation step shifts by exactly 8 bits, avoiding partial-byte
+  I/O. The choice L = 2^31 is conventional for 64-bit rANS; it gives a
+  ~1-bit per symbol overhead from the initial state, amortised over the
+  stream length.
+
+
+5.3  Frequency Normalisation
+──────────────────────────────
+
+  The frequency table must satisfy two invariants:
+
+      sum(freqs) == M    (required by the decode table construction)
+      freqs[i]   >= 1    (required to avoid division-by-zero in encode)
+
+  The second invariant is non-trivial: a symbol class may have zero observed
+  frequency in a given stream (e.g. ClassNormal32 on near-constant data).
+  Zero-frequency symbols cannot be encoded by rANS — but they also cannot
+  be excluded from the table, because the table size is fixed per version
+  (5, 6, 7, or 9 symbols) and the decoder uses the stored table to look up
+  every symbol regardless of whether it appears.
+
+  normalizeRansFreqs handles this as follows:
+
+      1. Scale all raw counts proportionally to sum ≈ M using round().
+      2. Promote any zero-frequency entry to freq = 1.
+      3. Adjust the largest bucket to make the sum exactly M.
+
+  The promotion step (2) "steals" at most (numSyms - 1) slots from the
+  largest bucket. For the 9-symbol alphabet this costs at most 8 slots out
+  of 4096 — a model overhead of 0.2%. In practice, zero-frequency symbols
+  are rare on typical data (most streams have at least one occurrence of
+  each class), so the adjustment is usually zero or one slot.
+
+  The adjustment in step (3) targets the largest bucket rather than
+  distributing evenly. This minimises the relative distortion to the most
+  probable symbol (ClassIdentity on smooth data), whose frequency dominates
+  the entropy estimate.
+
+
+5.4  Encode Order and Byte Reversal
+─────────────────────────────────────
+
+  rANS encodes symbols in reverse order. This is a fundamental property of
+  the algorithm: the decode step is the inverse of the encode step, so
+  symbols must be decoded in the same order they were encoded. Encoding in
+  reverse means decoding proceeds forward.
+
+  The renormalisation bytes emitted during reverse encoding are collected in
+  a buffer, then reversed before writing to the stream. The result is a byte
+  stream that the decoder reads forward: it absorbs bytes in the same order
+  they appear, while decoding symbols front-to-back.
+
+  This is the standard "tANS/rANS reverse encode + forward decode" pattern.
+  The cost is one allocation of O(N) bytes for the renormalisation buffer;
+  there is no way to avoid this without a two-pass encoder.
+
+  The final encoder state x is written as an 8-byte little-endian uint64
+  at the start of the compressed stream (before the renormalisation bytes).
+  The decoder reads this state first, then absorbs renormalisation bytes
+  left-to-right as it decodes symbols left-to-right.
+
+
+5.5  Why rANS Output is Incompressible
+────────────────────────────────────────
+
+  The rANS output is indistinguishable from a uniform random byte sequence
+  to any lossless compressor (LZ77, LZ78, Deflate, Zstd, Brotli). This is
+  not a weakness — it is the correct behaviour of an entropy coder operating
+  near the theoretical minimum.
+
+  Formally: if the symbol frequencies perfectly match the true symbol
+  probabilities, rANS produces output at exactly H(p) bits per symbol. The
+  output bytes have no exploitable structure — no repeated substrings, no
+  skewed byte histograms, no predictable patterns — because all such
+  structure was consumed by the entropy coder. A downstream LZ pass over
+  rANS output will find no matches and produce output ≥ input size.
+
+  This means the .tzrz file format does not benefit from a wrapping
+  compressor. Applying gzip or zstd to a .tzrz file will increase its size
+  by 10–20 bytes (the wrapper overhead) and not reduce it. The format is
+  already at the entropy bound for the class stream; the payload bytes
+  (quantised offsets) are not entropy-coded but are individually compact
+  (1–4 bytes per ratio), and their byte values are not compressible by LZ
+  either (they reflect the actual distribution of ratio magnitudes in the
+  data, which has no string-repetition structure).
+
+
+============================================================
+6. END-TO-END SIG-FIGS GUARANTEE
+============================================================
+
+  The end-to-end guarantee is the property that for every decoded value x̂[n]:
+
+      |x̂[n] - x[n]| / |x[n]| ≤ ε
+
+  holds by construction for all n, not statistically. This section proves
+  that the three mechanisms together — per-ratio quantisation bound,
+  adaptive reanchoring, and ClassNormalExact fallback — are sufficient.
+
+  Three error sources must be bounded independently. The guarantee holds
+  if all three are bounded by ε simultaneously.
+
+
+6.1  Source 1: Per-Ratio Quantisation Error
+─────────────────────────────────────────────
+
+  When a ratio r[n] is stored as a quantised offset at PrecisionBits B,
+  the decoder reconstructs r̂[n] = Q⁻¹(Q(r[n], B), B). From Section 2.2:
+
+      |r̂[n] - r[n]| / r[n] ≤ ε_max(B) = 2^(8 / 2^B) - 1
+
+  This is a per-ratio bound, not an accumulated bound. It applies
+  independently to each ratio. It does not compound across steps.
+
+  Choosing B = SigFigsToBits(N) guarantees ε_max(B) < 5 × 10^-N for all
+  ratios within the quantiser range. This satisfies the per-ratio half-ulp
+  criterion for N significant figures.
+
+  For ClassNormalExact ratios (verbatim float64): the stored ratio is exact
+  to float64 precision (~15–17 significant figures). The per-ratio error is
+  therefore at most float64 rounding error ≈ 10^-15, negligible.
+
+  For ClassIdentity ratios: the decoder reconstructs x̂[n] = x̂[n-1] (no
+  change). The true value satisfies |r[n] - 1.0| < IdentityEpsilon = 10^-9,
+  meaning |x[n] - x[n-1]| / |x[n-1]| < 10^-9. The error introduced is at
+  most 10^-9 × |x̂[n-1]| per step. This is non-compounding (it does not
+  multiply with previous steps) and is bounded well within any practical ε.
+
+
+6.2  Source 2: Drift from Cumulative Reconstruction
+──────────────────────────────────────────────────────
+
+  The decoder reconstructs values by repeated multiplication:
+
+      x̂[n] = x̂[k] × r̂[k+1] × r̂[k+2] × ... × r̂[n]
+
+  where x̂[k] is the most recent anchor. Even if each r̂[i] has bounded
+  per-ratio error, the errors can accumulate across K steps:
+
+      x̂[n] = x[n] × (1 + e[k+1]) × (1 + e[k+2]) × ... × (1 + e[n])
+
+  where each |e[i]| ≤ ε_max(B). In the worst case (all errors same sign):
+
+      |x̂[n] - x[n]| / |x[n]| ≤ (1 + ε_max)^K - 1 ≈ K × ε_max
+
+  for small ε_max. With K steps and ε_max(B) per step, the accumulated
+  error grows linearly with K.
+
+  This is the drift problem. It is bounded by reanchoring: at any ClassReanchor
+  event, x̂[k] = x[k] exactly (verbatim float64), resetting the accumulation
+  to zero. The maximum drift between two reanchors is therefore:
+
+      drift_max = (1 + ε_max)^K - 1
+
+  Fixed-cadence reanchoring (ReanchorInterval = K) bounds drift at
+  (1 + ε_max)^K - 1 ≈ K × ε_max. For K=1000 and ε_max=1.2×10^-4 (B=16),
+  drift_max ≈ 0.12 — far larger than the per-ratio bound. Fixed cadence
+  alone does not give an end-to-end guarantee; the interval would need to be
+  set to K ≤ ε / ε_max = 1 for the guarantee to hold, which eliminates all
+  compression benefit.
+
+
+6.3  Source 3: Adaptive Reanchoring — the Guarantee Mechanism
+───────────────────────────────────────────────────────────────
+
+  Adaptive reanchoring solves the drift problem without a fixed cadence.
+  Instead of reanchoring every K steps, the encoder computes the actual
+  reconstruction error at each step and reanchors only when needed.
+
+  For each value x[n] (after choosing the class and quantised ratio):
+
+      x̂_would_be = x̂[n-1] × r̂[n]    (what the decoder would reconstruct)
+      err = |x̂_would_be - x[n]| / |x[n]|
+
+      if err > ε:
+          emit ClassReanchor with payload x[n]   // reset drift to zero
+      else:
+          emit the chosen class normally
+
+  The encoder uses the original value x[n] in the error check (not the
+  accumulated x̂[n]), so it is comparing the would-be decoded value against
+  ground truth. This is exact — no floating-point approximation in the check
+  itself.
+
+  After a ClassReanchor the decoder sets x̂[n] = x[n] exactly. The next
+  step starts with zero accumulated drift. Therefore: by induction, every
+  decoded value satisfies |x̂[n] - x[n]| / |x[n]| ≤ ε.
+
+  Base case n = 0: x̂[0] = x[0] exactly (verbatim anchor). Error = 0 ≤ ε. ✓
+  Inductive step: assume x̂[n-1] has |error| ≤ ε (either by the inductive
+    hypothesis or by a fresh anchor). The encoder evaluates the would-be
+    error for x̂[n]. If it exceeds ε, a reanchor fires and |error| = 0 ≤ ε.
+    If it does not, the chosen class is emitted and |error| ≤ ε by the
+    check condition. Either way, |x̂[n]| error ≤ ε. ✓
+
+  The proof does not depend on the data distribution, the sequence length,
+  or the number of steps since the last anchor. The guarantee is
+  unconditional.
+
+  ClassIdentity special case: the encoder checks |x̂[n-1] - x[n]| / |x[n]|
+  directly (no ratio involved). If this exceeds ε, a reanchor fires. This
+  handles the edge case where x[n] has drifted away from x̂[n-1] even though
+  the ratio is classified as identity.
+
+
+6.4  K_max: The Circuit Breaker
+─────────────────────────────────
+
+  The adaptive drift check owns the end-to-end guarantee. K_max is a
+  circuit-breaker backstop with a different purpose: preventing degenerate
+  streams where the drift check never fires.
+
+  This can occur if: (a) ε is very large (loose tolerance), so the threshold
+  is never crossed, and (b) the stream consists entirely of ClassIdentity
+  symbols. In that case no reanchor ever fires, the encoder state diverges
+  from ground truth over millions of steps, and floating-point rounding in
+  the decoder's accumulated product accumulates unchecked.
+
+  K_max = 10,000 (from SigFigsToMaxK) is a fixed backstop: a forced
+  ClassReanchor is emitted at least every 10,000 steps regardless of the
+  drift check result. For any practical stream the adaptive check fires far
+  more often; K_max is never reached on normal data.
+
+  K_max is not part of the end-to-end guarantee proof — the proof relies
+  only on the adaptive check. K_max is a safety net for pathological inputs.
+
+
+6.5  ClassNormalExact: the Precision Escape Hatch
+───────────────────────────────────────────────────
+
+  For the adaptive stream (v8), there is a third mechanism: ClassNormalExact.
+  When fastPath does not fire (ε_max(B) ≥ ε) and the per-ratio check fails
+  for a specific ratio, the encoder emits ClassNormalExact with the verbatim
+  float64 ratio.
+
+  The effect: the per-ratio reconstruction error for that step is float64
+  rounding error only (~10^-15), well within any practical ε. The
+  ClassNormalExact path is the correct fallback when quantisation is
+  insufficiently precise for a specific ratio.
+
+  In practice: when --sig-figs N is used, B = SigFigsToBits(N) is chosen
+  such that ε_max(B) < 5×10^-N ≤ ε. Therefore fastPath always fires for
+  --sig-figs encoding, and ClassNormalExact count is zero. ClassNormalExact
+  is only active when a custom --tolerance is set tighter than 5×10^-N for
+  the configured B, which is not a configuration the CLI produces by default.
+
+  This is confirmed by the invariant in EncodeOptions:
+      Tolerance = math.MaxFloat64 when --sig-figs is used
+  meaning the per-ratio tolerance check (tol > 0 && deltaB < tol) always
+  fires as fastPath, and the ClassNormalExact branch is never reached.
+
+
+6.6  Summary: Three Mechanisms Are Sufficient
+──────────────────────────────────────────────
+
+  The end-to-end guarantee is satisfied by the conjunction of:
+
+      (a) Per-ratio quantisation bound (Section 6.1):
+          ε_max(B) < 5×10^-N for all quantised ratios.
+          Ensures no single quantisation step introduces more than ε error.
+
+      (b) Adaptive reanchoring (Section 6.3):
+          The encoder checks the actual would-be reconstruction error at
+          every step. If it exceeds ε, a verbatim anchor fires. By
+          induction, every decoded value has error ≤ ε.
+
+      (c) ClassNormalExact fallback (Section 6.5):
+          For any ratio where (a) fails the per-ratio check, the ratio is
+          stored verbatim. This extends (a) to hold universally, not just
+          when fastPath fires.
+
+  Mechanism (b) subsumes (a) for end-to-end purposes — the drift check
+  would catch any per-ratio failure regardless. But (a) is what makes the
+  system efficient: when ε_max(B) < ε, the fastPath fires, the per-ratio
+  check is skipped, and ClassNormalExact is never emitted. The guarantee
+  and the performance are compatible because the per-ratio bound is tight
+  enough to make the drift check fire only on genuinely large steps, not
+  on every small quantisation rounding.
+
+
+============================================================
+7. BENCHMARK RESULTS
+============================================================
+
+  These results were gathered under the M4 benchmark harness (bench_m4.sh),
+  using the v7 stream encoder (QuantizedV2, stream byte 7) for quantized
+  modes and an intermediate build of AdaptiveV7 for adaptive modes. The
+  current production encoder is stream v8 (AdaptiveV7, M13). Quantized mode
+  results are expected to be stable across versions (the format and algorithm
+  have not changed since M4). Adaptive mode results from this harness reflect
+  an intermediate implementation and should be treated as indicative only;
+  a fresh run of bench_m4.sh against the current v8 encoder is planned before
+  publication.
+
+  All adaptive mode numbers in this section are labelled "M4" to make this
+  distinction explicit.
+
+
+7.1  Setup
+───────────
+
+  n = 50,000 float64 values per dataset (400 KB uncompressed).
+  Six synthetic dataset classes designed to represent the range of real-world
+  float64 data. Each dataset was generated fresh per run with a fixed seed.
+
+  Metrics:
+    ratio = encoded_bytes / 400,000   (lower is better; 1.0 = no compression)
+    enc MB/s = encode throughput (measured on the encoding machine; not
+               normalised — use only for order-of-magnitude comparisons)
+
+  External codecs tested: zstd (levels 3 and 19), brotli (quality 6 and 11).
+  Both are general-purpose lossless byte compressors. They compress the raw
+  IEEE 754 binary without any domain-specific pre-processing.
+
+  ToroidZip modes:
+    Q-Nsf: QuantizedV2 (stream v7), sig-figs N, fixed-cadence reanchor.
+           No end-to-end accuracy guarantee; periodic drift control only.
+    A7-Nsf: AdaptiveV7 (stream v8, M4 build), sig-figs N, adaptive reanchor.
+           End-to-end ε guarantee by construction.
+
+  The comparison is intentionally asymmetric: external codecs are lossless;
+  ToroidZip rows are lossy at the stated precision. The tables below are
+  grouped by tier so that lossy and lossless results are not directly ranked.
+
+
+7.2  Dataset Classes
+─────────────────────
+
+  Sensor: single-scale smooth data. Values generated as a random walk with
+    per-step changes of ±0.1% — representative of a physical sensor (pressure,
+    temperature, voltage) sampled at high frequency relative to its bandwidth.
+    Ratios are tightly clustered near 1.0. Almost no boundary events.
+
+  Financial: tick-price data simulation. Step distribution is heavy-tailed:
+    most steps are tiny, occasional large moves. The float64 byte representation
+    of repeated tick prices also has LZ-exploitable byte patterns — consecutive
+    prices in the same order of magnitude share prefix bytes. This is the
+    dataset where lossless byte compressors (zstd, brotli) have the most
+    structural advantage over ToroidZip.
+
+  MultiScale: values spanning twelve orders of magnitude (1e-6 to 1e6), regime
+    changes every ~1,000 samples. The absolute values change drastically but
+    the per-step ratios remain bounded. This dataset is adversarial for all
+    delta-based and LZ-based compressors (the float64 bytes have no stable
+    prefix structure across regimes) and ideal for ratio-first encoding.
+
+  Volatile: step distribution with 5% probability of a large move (up to ±10x
+    per step) alongside the normal ±0.1% distribution. Designed to stress
+    boundary event handling and reanchor frequency.
+
+  NearConstant: step changes of ±1 ppm (1e-6 relative). Values are essentially
+    constant at float64 precision. Ratios are identity or sub-identity (the
+    difference from 1.0 is below IdentityEpsilon for many steps). This is
+    the most extreme test of identity clustering.
+
+  NeuralWeight: values drawn from a normal distribution N(0, 0.02), no
+    sequential correlation. Each value is independent of its predecessor —
+    the ratio distribution is close to uniform in log-space. This is the
+    worst case for ratio-first encoding: no identity clustering, no
+    smoothness, maximum entropy ratio stream.
+
+
+7.3  Quantized Mode Results
+────────────────────────────
+
+  The quantized mode (QuantizedV2, stream v7) applies fixed-precision
+  log-space quantisation with periodic reanchor. It does not carry an
+  end-to-end accuracy guarantee but achieves the best compression ratios
+  by allowing periodic reanchor rather than adaptive reanchor.
+
+  Compression ratios, quantized mode (n=50,000):
+
+      Dataset       Q-3sf   Q-6sf   vs lossless (best)
+      ──────────────────────────────────────────────────
+      Sensor        0.025   0.050   brotli q=6: 0.806   → Q-3sf is 97% smaller
+      Financial     0.025   0.050   brotli q=6: 0.182   → Q-3sf is 86% smaller
+      MultiScale    0.025   0.050   brotli q=6: 0.864   → Q-3sf is 97% smaller
+      Volatile      0.025   0.050   brotli q=6: 0.727   → Q-3sf is 97% smaller
+      NearConstant  0.025   0.050   brotli q=6: 0.687   → Q-3sf is 96% smaller
+      NeuralWeight  0.026   0.051   brotli q=11: 0.914  → Q-3sf is 97% smaller
+
+  The consistency across datasets is remarkable: regardless of whether the
+  data is smooth, volatile, or multi-scale, the quantized mode compresses to
+  approximately the same absolute size (~10 KB for a 400 KB input at 3sf).
+  This reflects the scale-invariance property: the ratio distribution is
+  nearly dataset-independent at 3sf precision because nearly all ratios land
+  in the ClassIdentity or ClassNormal8 bucket regardless of absolute magnitude.
+
+  The NeuralWeight dataset (uncorrelated, maximum-entropy ratios) produces
+  only marginally higher ratios (0.026 vs 0.025). Even in the worst case
+  for ratio-first encoding, the quantised mode achieves 97% size reduction
+  at 3sf. The reason: with no sequential correlation, ratios are spread
+  uniformly across the quantiser range, but the log-space grid at B=10 (3sf)
+  is coarse enough that many fall into the same bucket; the rANS model assigns
+  a short code to the most frequent bucket regardless of which one it is.
+
+  Q-9sf and Q-6sf produce nearly identical ratios. This is expected: at
+  increasing precision (larger B), more offsets are non-zero but they remain
+  small (ClassNormal8 dominates), so the total payload grows modestly. The
+  rANS class stream contribution is roughly constant; the distinction between
+  6sf and 9sf appears primarily in the payload bytes per ClassNormal symbol,
+  which are dominated by the per-reanchor float64 (8 bytes) rather than the
+  per-ratio offset (1–2 bytes).
+
+  Encode throughput: ~8–9 MB/s across all modes and datasets on the test
+  machine. The quantized encode path is a tight loop (one log+exp pair per
+  non-identity ratio, one rANS encode per symbol); throughput is I/O and
+  rANS-normalisation-bound.
+
+
+7.4  Comparison with Lossless Codecs
+──────────────────────────────────────
+
+  The lossless tier (no data loss):
+
+      Dataset       zstd-3   zstd-19   brotli-6   brotli-11
+      ──────────────────────────────────────────────────────
+      Sensor        0.958    0.934     0.806       0.884
+      Financial     0.198    0.195     0.182       0.185
+      MultiScale    0.959    0.931     0.864       0.876
+      Volatile      0.943    0.822     0.727       0.752
+      NearConstant  0.932    0.738     0.687       0.692
+      NeuralWeight  0.949    0.940     0.937       0.914
+
+  Four observations:
+
+  (a) Multi-scale data is essentially incompressible by lossless codecs.
+  On Sensor and MultiScale, even brotli at maximum quality achieves only
+  0.88–0.88 ratio. The float64 IEEE 754 encoding of values spanning 1e-6
+  to 1e6 has different exponent fields in every regime, producing near-random
+  byte sequences with no LZ-exploitable repetition. ToroidZip Q-3sf at 0.025
+  is 35× smaller than brotli on MultiScale — not because ToroidZip is a
+  better compressor, but because the lossy transformation eliminates all
+  variability not relevant to 3 sig figs.
+
+  (b) Financial data is the most LZ-favourable dataset in the suite. The
+  tick-price simulation produces float64 values that share prefix bytes within
+  each price regime, and zstd/brotli exploit this aggressively (0.18–0.20
+  ratio). ToroidZip's Q-3sf still achieves 0.025 on Financial, which is
+  smaller than zstd-3 (0.20) — but 0.025 is lossy at 3 sig figs while
+  zstd-3 is lossless. At equal precision requirements, the correct comparison
+  is: if 3sf accuracy is acceptable, ToroidZip saves 86% vs lossless zstd-3;
+  if losslessness is required, zstd-3 (0.20) is the right tool.
+
+  (c) NeuralWeight is the hardest case for both categories. Lossless codecs
+  achieve only 0.91–0.95 (near-incompressible; brotli-11 is the best at
+  0.914). ToroidZip Q-3sf achieves 0.026 — 35× smaller — but again this is
+  lossy. For neural network weights where exact bit-level reproducibility is
+  required (deterministic inference), the lossless tier is the correct
+  choice. For neural weight quantisation (already lossy post-training), the
+  codec is well-suited.
+
+  (d) NearConstant is where lossless codecs have the most structured
+  opportunity — all values are nearly identical, so LZ finds long repeating
+  byte sequences. Brotli-19 achieves 0.69. ToroidZip Q-3sf at 0.025 is
+  still 36× smaller, but at far lower accuracy. At Q-6sf (0.050), ToroidZip
+  is still 7× smaller than brotli's best at 6 sig figs accuracy loss.
+
+
+7.5  Adaptive Mode (M4, indicative)
+─────────────────────────────────────
+
+  The adaptive mode (AdaptiveV7, stream v8) results from the M4 benchmark:
+
+      Dataset       A7-4sf   A7-5sf   A7-6sf   A7-9sf
+      ──────────────────────────────────────────────────
+      Sensor        0.878    0.906    0.865    0.889
+      Financial     0.992    0.996    0.987    0.994
+      MultiScale    0.858    0.922    0.905    0.887
+      Volatile      1.001    0.919    0.846    0.874
+      NearConstant  1.001    0.920    0.847    0.865
+      NeuralWeight  0.911    0.931    0.902    0.927
+
+  These numbers are substantially higher (worse) than the quantized mode.
+  Several factors account for this, and the results should be interpreted
+  with care:
+
+  First: the M4 benchmark AdaptiveV7 build predates the precision-relative
+  tier system (M7) and several correctness fixes (M8–M12). The current v8
+  encoder is architecturally the same but the per-ratio routing and reanchor
+  logic were significantly revised after M4. A direct re-run of bench_m4.sh
+  with the current build is required before these numbers can be cited.
+
+  Second: the adaptive mode carries a structural cost that the quantized mode
+  does not. The adaptive drift check fires a ClassReanchor whenever the
+  accumulated error approaches ε. Each reanchor costs 8 bytes (verbatim
+  float64) plus a class symbol. On smooth data at tight tolerance (4sf), the
+  check fires more frequently than the fixed-cadence interval used by the
+  quantized mode. This is the correct trade-off — the adaptive mode provides
+  a provable end-to-end guarantee; the quantized mode does not — but it means
+  the adaptive mode will always be larger than the quantized mode at any given
+  precision level.
+
+  Third: for Volatile and NearConstant at A7-4sf, the ratio exceeds 1.0
+  (the compressed file is larger than uncompressed). This occurs when the
+  reanchor density is high enough that the rANS class stream overhead plus
+  float64 payloads exceed the raw data size. This is a regime where neither
+  the adaptive mode nor any compressor can help; the data variation is
+  irreducible at the stated precision.
+
+  The adaptive mode's value is not compression ratio relative to the quantized
+  mode — it is the provable accuracy guarantee. For scientific data where
+  both compression and accuracy bounds are required simultaneously, the
+  adaptive mode is the correct encoder even at higher ratios.
+
+
+7.6  Summary of Results
+────────────────────────
+
+  The benchmark results support the following conclusions:
+
+  (1) Quantized ratio-first encoding achieves extraordinary compression on
+  smooth numerical data. Ratios of 0.025–0.05 at 3–6 sig figs are consistent
+  across six structurally different dataset classes. No general-purpose
+  lossless compressor approaches these ratios on the same data.
+
+  (2) The compression advantage is largest on multi-scale and sensor data —
+  precisely the datasets where lossless byte compressors struggle. The
+  scale-invariance property is the cause: the ratio distribution is
+  independent of absolute magnitude, so a codec tuned to ratios performs
+  equally well at 1e-6 and 1e6.
+
+  (3) Financial data is the most favourable case for lossless compressors
+  (brotli achieves 0.18), yet ToroidZip Q-3sf at 0.025 is still smaller —
+  at the cost of 3sf lossy accuracy. For applications requiring losslessness,
+  a standard LZ compressor is appropriate for financial data; for applications
+  tolerating 3sf loss, ToroidZip is competitive.
+
+  (4) NeuralWeight (uncorrelated, high-entropy ratios) is the worst case for
+  ratio-first encoding. Even here, Q-3sf achieves 0.026 — a 38× reduction.
+  The result is due to the coarse quantisation grid at 3sf (B=10) collapsing
+  the uniform ratio distribution to a small number of distinct offsets, which
+  the rANS model then compresses efficiently.
+
+  (5) Adaptive mode benchmark numbers from M4 are not representative of the
+  current encoder. Re-run bench_m4.sh before citing adaptive results.

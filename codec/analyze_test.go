@@ -351,3 +351,103 @@ func TestAnalyzeTiersEffectiveBytesRange(t *testing.T) {
 		}
 	}
 }
+
+// --- AnalyzeTiersV8 ---
+
+// TestAnalyzeTiersV8Empty verifies zero-value report for nil/empty input.
+func TestAnalyzeTiersV8Empty(t *testing.T) {
+	row := codec.AnalyzeTiersV8(nil, 16, 1e-4)
+	if row.Total != 0 || row.U8 != 0 || row.U16 != 0 || row.U24 != 0 || row.U32 != 0 || row.F64 != 0 {
+		t.Errorf("expected all-zero row for nil input, got %+v", row)
+	}
+	if row.EffectiveBytesPerRatio() != 0 {
+		t.Errorf("EffectiveBytesPerRatio on empty row should be 0")
+	}
+}
+
+// TestAnalyzeTiersV8TolZero verifies that tol==0 routes everything to F64.
+func TestAnalyzeTiersV8TolZero(t *testing.T) {
+	ratios := []float64{1.001, 1.01, 1.1}
+	row := codec.AnalyzeTiersV8(ratios, 16, 0)
+	if row.F64 != 3 || row.U8+row.U16+row.U24+row.U32 != 0 {
+		t.Errorf("tol=0: expected all F64, got %+v", row)
+	}
+}
+
+// TestAnalyzeTiersV8CountsAddUp verifies U8+U16+U24+U32+F64 == Total.
+func TestAnalyzeTiersV8CountsAddUp(t *testing.T) {
+	ratios := make([]float64, 200)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*2e-4
+	}
+	row := codec.AnalyzeTiersV8(ratios, 16, math.MaxFloat64)
+	got := row.U8 + row.U16 + row.U24 + row.U32 + row.F64
+	if got != row.Total {
+		t.Errorf("counts sum %d != Total %d", got, row.Total)
+	}
+}
+
+// TestAnalyzeTiersV8SmoothDataU8 verifies that near-identity ratios land in
+// U8 at B=16 with fastPath (tol=MaxFloat64) — mirroring encoder behaviour.
+func TestAnalyzeTiersV8SmoothDataU8(t *testing.T) {
+	// Ratios of 1±1e-5 produce very small signed offsets at B=16 → U8.
+	ratios := make([]float64, 500)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i%3-1)*1e-5
+	}
+	row := codec.AnalyzeTiersV8(ratios, 16, math.MaxFloat64)
+	if row.U8 == 0 {
+		t.Errorf("expected U8 ratios for near-identity input, got %+v", row)
+	}
+	if row.F64 != 0 {
+		t.Errorf("fastPath should prevent F64 on smooth data, got %d F64", row.F64)
+	}
+}
+
+// TestAnalyzeTiersV8HighPrecision verifies that bits=24 is not capped and
+// routes correctly — U8 for tiny steps, no U16/U24/U32 overflow for smooth data.
+func TestAnalyzeTiersV8HighPrecision(t *testing.T) {
+	ratios := make([]float64, 100)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-7
+	}
+	row := codec.AnalyzeTiersV8(ratios, 24, math.MaxFloat64)
+	if row.Bits != 24 {
+		t.Errorf("Bits should be 24, got %d", row.Bits)
+	}
+	total := row.U8 + row.U16 + row.U24 + row.U32 + row.F64
+	if total != row.Total {
+		t.Errorf("counts sum %d != Total %d", total, row.Total)
+	}
+}
+
+// TestAnalyzeTiersV8FastPathVsPerRatio verifies that fastPath (tol=MaxFloat64)
+// never produces F64, while a tight tol may produce F64 for large offsets.
+func TestAnalyzeTiersV8FastPathVsPerRatio(t *testing.T) {
+	// Large ratio step — will fail tight per-ratio check at low bits.
+	ratios := []float64{8.0} // ratio = 8x, large offset at any precision
+	rowFast := codec.AnalyzeTiersV8(ratios, 8, math.MaxFloat64)
+	if rowFast.F64 != 0 {
+		t.Errorf("fastPath (MaxFloat64) should never produce F64, got %+v", rowFast)
+	}
+	// With very tight tol that ε_max(8) cannot satisfy: fastPath won't fire.
+	rowTight := codec.AnalyzeTiersV8(ratios, 8, 1e-15)
+	if rowTight.F64 == 0 {
+		t.Errorf("tight tol with low bits should produce F64 for large ratio, got %+v", rowTight)
+	}
+}
+
+// TestAnalyzeTiersV8EffectiveBytesRange verifies EffectiveBytesPerRatio is in [1,8].
+func TestAnalyzeTiersV8EffectiveBytesRange(t *testing.T) {
+	ratios := make([]float64, 100)
+	for i := range ratios {
+		ratios[i] = 1.0 + float64(i+1)*1e-4
+	}
+	for _, tol := range []float64{math.MaxFloat64, 1e-4, 1e-7} {
+		row := codec.AnalyzeTiersV8(ratios, 16, tol)
+		eff := row.EffectiveBytesPerRatio()
+		if eff < 1.0 || eff > 8.0 {
+			t.Errorf("tol=%g: EffectiveBytesPerRatio=%v out of [1,8]", tol, eff)
+		}
+	}
+}

@@ -89,8 +89,8 @@ func runEncode(args []string) error {
 	if *lossy && !*auto {
 		return fmt.Errorf("--lossy requires --auto")
 	}
-	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 4 {
-		return fmt.Errorf("--bytes must be 1, 2, or 4 (got %d)", *bytesFlag)
+	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 3 && *bytesFlag != 4 {
+		return fmt.Errorf("--bytes must be 1, 2, 3, or 4 (got %d)", *bytesFlag)
 	}
 	if *bytesFlag > 0 && *sigFigs > 0 {
 		return fmt.Errorf("--bytes and --sig-figs cannot both be set")
@@ -189,6 +189,8 @@ func runEncode(args []string) error {
 			ceilBits = 8
 		case 2:
 			ceilBits = 16
+		case 3:
+			ceilBits = 24
 		default: // 4
 			ceilBits = 30
 		}
@@ -272,8 +274,8 @@ func runAnalyze(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 4 {
-		return fmt.Errorf("--bytes must be 1, 2, or 4 (got %d)", *bytesFlag)
+	if *bytesFlag != 0 && *bytesFlag != 1 && *bytesFlag != 2 && *bytesFlag != 3 && *bytesFlag != 4 {
+		return fmt.Errorf("--bytes must be 1, 2, 3, or 4 (got %d)", *bytesFlag)
 	}
 	if *sigFigs > 0 && *tolerance != 0 {
 		return fmt.Errorf("--sig-figs and --tolerance cannot both be set")
@@ -301,7 +303,7 @@ func runAnalyze(args []string) error {
 	fmt.Printf("  coverage    : %.2f%%\n", precRpt.Coverage*100)
 	fmt.Printf("  recommended : %d bits (%d sig figs)\n",
 		precRpt.RecommendedBits, precRpt.RecommendedSigFigs)
-	fmt.Printf("  note        : bits rounded to tier ceiling (u8=8, u16=16, u32=30);\n")
+	fmt.Printf("  note        : bits rounded to tier ceiling (u8=8, u16=16, u24=24, u32=30);\n")
 	fmt.Printf("                within a tier higher precision is free\n")
 	fmt.Println("  bits  entropy(bits/sym)")
 	for _, b := range []int{4, 8, 12, 16, 20, 24, 28, 30} {
@@ -349,6 +351,8 @@ func runAnalyze(args []string) error {
 			ceilBits = 8
 		case 2:
 			ceilBits = 16
+		case 3:
+			ceilBits = 24
 		default: // 4
 			ceilBits = 30
 		}
@@ -372,11 +376,8 @@ func runAnalyze(args []string) error {
 		if bits == 0 {
 			bits = precRpt.RecommendedBits
 		}
-		if bits > 16 {
-			bits = 16
-		}
-		row := codec.AnalyzeTiers(ratios, bits, tol)
-		fmt.Println("\n=== Adaptive Tier Preview ===")
+		row := codec.AnalyzeTiersV8(ratios, bits, tol)
+		fmt.Println("\n=== Adaptive Tier Preview (v8) ===")
 		if endToEndTol > 0 {
 			fmt.Printf("  sig-figs guarantee : %d sig figs end-to-end (T_end = %.2e)\n",
 				*sigFigs, endToEndTol)
@@ -385,13 +386,17 @@ func runAnalyze(args []string) error {
 		} else {
 			fmt.Printf("  epsilon     : %.2e\n", tol)
 		}
-		fmt.Printf("  u16 bits    : %d\n", bits)
-		fmt.Printf("  normal ratios: %d\n", row.Total)
+		fmt.Printf("  precision bits : %d\n", bits)
+		fmt.Printf("  normal ratios  : %d\n", row.Total)
 		if row.Total > 0 {
+			pU8 := float64(row.U8) / float64(row.Total) * 100
 			pU16 := float64(row.U16) / float64(row.Total) * 100
+			pU24 := float64(row.U24) / float64(row.Total) * 100
 			pU32 := float64(row.U32) / float64(row.Total) * 100
 			pF64 := float64(row.F64) / float64(row.Total) * 100
+			fmt.Printf("  u8   (1 B)  : %6d  (%5.1f%%)\n", row.U8, pU8)
 			fmt.Printf("  u16  (2 B)  : %6d  (%5.1f%%)\n", row.U16, pU16)
+			fmt.Printf("  u24  (3 B)  : %6d  (%5.1f%%)\n", row.U24, pU24)
 			fmt.Printf("  u32  (4 B)  : %6d  (%5.1f%%)\n", row.U32, pU32)
 			fmt.Printf("  f64  (8 B)  : %6d  (%5.1f%%)\n", row.F64, pF64)
 			fmt.Printf("  eff bytes/ratio: %.2f  (lossless=8.00)\n", row.EffectiveBytesPerRatio())
