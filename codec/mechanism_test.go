@@ -34,7 +34,7 @@ func countClasses(classes []byte) classCounts {
 			c.identity++
 		case codec.ClassNormal8:
 			c.u8++
-		case codec.ClassNormal:
+		case codec.ClassNormal16:
 			c.u16++
 		case codec.ClassNormal24:
 			c.u24++

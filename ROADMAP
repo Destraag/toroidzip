@@ -4,7 +4,7 @@ Scope: PUBLIC — milestone tracker and intent. Committed to git.
         Implementation detail, design rationale, and session notes live
         in PLAN (gitignored, internal only).
 
-## Status: Milestone 15 complete
+## Status: Milestone 16 complete
 
 ---
 
@@ -537,13 +537,16 @@ tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
 
   M15 COMPLETE — 195 tests passing; build clean
 
-### Milestone 16 — Pre-Publish Cleanup (NEXT)
+### Milestone 16 — Pre-Publish Cleanup ✓
 
-- [ ] 16a:    Commit pre-cleanup snapshot (all stream versions intact)
-- [ ] 16b-i:  Remove v1–v6 encoder/decoder code; decode dispatch returns error for v1–v6
-- [ ] 16b-ii: Rename ClassNormal → ClassNormal16 throughout
-- [ ] 16c:    Full verification pass (go vet, staticcheck, all tests, writeup review)
-- [ ] 16d:    Tag and publish v1.0.0
+- [x] 16a:    Commit pre-cleanup snapshot (all stream versions intact)
+- [x] 16b-i:  Remove v1–v6 encoder/decoder code; decode dispatch returns error for v1–v6
+- [x] 16b-ii: Rename ClassNormal → ClassNormal16 throughout
+- [x] 16c:    Full verification pass (go vet, staticcheck, all tests, writeup review)
+- [x] 16d:    Tag and publish v1.0.0
+
+  M16 COMPLETE — 102 tests passing; 87.9% coverage; build, vet, staticcheck clean;
+  v1–v6 legacy encoders removed; ClassNormal renamed ClassNormal16; v1.0.0 tagged
 
 ---
 
@@ -553,11 +556,11 @@ tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
     toroidzip decode <input.tzrz> <output.f64>
     toroidzip analyze <input.f64>
 
-    --entropy-mode raw|lossless|quantized|adaptive  (default lossless)
-    --sig-figs N       significant decimal figures 1–9 (implies quantized)
-    --precision N      precision bits 1–30 (implies quantized)
+    --entropy-mode quantized|adaptive  (default quantized)
+    --sig-figs N       significant decimal figures 1–9 (implies adaptive)
+    --precision N      precision bits 1–30 (implies adaptive)
     --auto             auto-select mode from data analysis
-    --lossy            shorthand for --entropy-mode quantized
+    --lossy            shorthand for --entropy-mode adaptive
     --drift-mode A|B   A=reanchor (default), B=Kahan compensate
     --reanchor-interval N  (default 256)
 

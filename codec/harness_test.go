@@ -111,7 +111,7 @@ func measureMode(dataset string, values []float64, m harnessMode) harnessResult 
 // It prints a markdown table and always passes.
 //
 // Axes covered:
-//   - EntropyMode: Raw, Lossless, Quantized (3sf / 6sf / 9sf), Adaptive (ε=1e-4 / ε=1e-3)
+//   - EntropyMode: Quantized (3sf / 6sf / 9sf), Adaptive (ε=1e-4 / ε=1e-3)
 //   - DriftMode:   Reanchor (default), Compensate, Quantize
 func TestM3Harness(t *testing.T) {
 	const n = 50_000
@@ -159,20 +159,9 @@ func TestM3Harness(t *testing.T) {
 	}
 
 	// Build the full mode matrix:
-	//   Raw × 1 (drift has no effect on raw class-byte payload size)
-	//   Lossless × 3 drift modes
 	//   Q-Nsf × 3 drift modes  (N = 3, 6, 9)
 	var modes []modeSpec
 	modes = append(modes, modeSpec{"Uncompressed", codec.EncodeOptions{}, -1})
-	modes = append(modes, modeSpec{"Raw(v1)", codec.EncodeOptions{EntropyMode: codec.EntropyRaw}, 0})
-
-	for _, dm := range []codec.DriftMode{codec.DriftReanchor, codec.DriftCompensate, codec.DriftQuantize} {
-		modes = append(modes, modeSpec{
-			"Lossless" + driftSuffix(dm),
-			codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: dm},
-			0,
-		})
-	}
 	for _, sf := range []int{3, 6, 9} {
 		bits := codec.SigFigsToBits(sf)
 		for _, dm := range []codec.DriftMode{codec.DriftReanchor, codec.DriftCompensate, codec.DriftQuantize} {
@@ -306,7 +295,7 @@ func TestM3Harness(t *testing.T) {
 	for _, ds := range datasets {
 		best := row{harnessResult{ratio: 1e9}, 0}
 		for _, r := range results {
-			if r.dataset == ds.name && r.mode != "Uncompressed" && r.mode != "Raw(v1)" && r.ratio < best.ratio {
+			if r.dataset == ds.name && r.mode != "Uncompressed" && r.ratio < best.ratio {
 				best = r
 			}
 		}
@@ -326,18 +315,7 @@ func TestM3Harness(t *testing.T) {
 	// ── Observations ─────────────────────────────────────────────────────────
 	fmt.Printf("### Observations\n\n")
 
-	// 1. Raw(v1) overhead vs uncompressed.
-	var rawRatio float64
-	for _, r := range results {
-		if r.dataset == datasets[0].name && r.mode == "Raw(v1)" {
-			rawRatio = float64(r.encBytes) / float64(rawFloat64Bytes)
-			break
-		}
-	}
-	fmt.Printf("- **Raw(v1) overhead**: %.1f%% larger than uncompressed float64 "+
-		"(class byte per value + stream header).\n", (rawRatio-1)*100)
-
-	// 2. Check if 6sf and 9sf produce identical sizes (same payload tier).
+	// 1. Check if 6sf and 9sf produce identical sizes (same payload tier).
 	bits6, bits9 := codec.SigFigsToBits(6), codec.SigFigsToBits(9)
 	same6_9 := true
 	for _, ds := range datasets {
@@ -373,10 +351,10 @@ func TestM3Harness(t *testing.T) {
 	var reanchorMBs, compensateMBs float64
 	for _, r := range results {
 		if r.dataset == "Sensor" {
-			if r.mode == "Lossless/Reanchor" {
+			if r.mode == "Q-9sf/Reanchor" {
 				reanchorMBs = r.encMBs
 			}
-			if r.mode == "Lossless/Compensate" {
+			if r.mode == "Q-9sf/Compensate" {
 				compensateMBs = r.encMBs
 			}
 		}
@@ -389,23 +367,11 @@ func TestM3Harness(t *testing.T) {
 			reanchorMBs, reanchorMBs/compensateMBs, compensateMBs)
 	}
 
-	// 4. Lossless barely compresses smooth data.
-	var losslessRatio float64
-	for _, r := range results {
-		if r.dataset == "Sensor" && r.mode == "Lossless/Compensate" {
-			losslessRatio = r.ratio
-			break
-		}
-	}
-	fmt.Printf("- **Lossless barely compresses smooth data** (Sensor ratio %.4f): "+
-		"IdentityEpsilon=1e-9 is far tighter than smooth-data ratio variation (~1e-4), "+
-		"so nearly all ratios are ClassNormal with full float64 payloads.\n", losslessRatio)
-
-	// 5. Financial outlier.
+	// 4. Financial outlier.
 	var finBestRatio float64
 	var finBestMode string
 	for _, r := range results {
-		if r.dataset == "Financial" && r.mode != "Uncompressed" && r.mode != "Raw(v1)" {
+		if r.dataset == "Financial" && r.mode != "Uncompressed" {
 			if finBestRatio == 0 || r.ratio < finBestRatio {
 				finBestRatio = r.ratio
 				finBestMode = r.mode
@@ -443,7 +409,7 @@ func TestM3Harness(t *testing.T) {
 	if adaptFine > 0 && q6sf > 0 {
 		fmt.Printf("- **Adaptive ε=1e-4 vs Q-6sf (Sensor)**: adaptive ratio %.4f vs quantized %.4f. "+
 			"Adaptive routes exact-path ratios as float64 payloads, so it is larger than pure quantized "+
-			"when most ratios fit within tolerance, but smaller than lossless.\n", adaptFine, q6sf)
+			"when most ratios fit within tolerance, but smaller than uncompressed float64.\n", adaptFine, q6sf)
 	}
 	if adaptCoarse > 0 && q3sf > 0 {
 		fmt.Printf("- **Adaptive ε=1e-3 vs Q-3sf (Sensor)**: adaptive ratio %.4f vs Q-3sf %.4f.\n",
@@ -558,7 +524,7 @@ func TestU24Savings(t *testing.T) {
 
 			for i := 1; i < len(values); i++ {
 				ratio, class := codec.ComputeRatioExported(values[i], prev)
-				if class != codec.ClassNormal {
+				if class != codec.ClassNormal16 {
 					prev = values[i]
 					continue
 				}
@@ -690,7 +656,7 @@ func TestSignedOffsetSavings(t *testing.T) {
 
 			for i := 1; i < len(values); i++ {
 				ratio, class := codec.ComputeRatioExported(values[i], prev)
-				if class != codec.ClassNormal {
+				if class != codec.ClassNormal16 {
 					prev = values[i]
 					continue
 				}
@@ -825,7 +791,7 @@ func TestQuantizedOffsetSavings(t *testing.T) {
 			prev := values[0]
 			for i := 1; i < len(values); i++ {
 				ratio, class := codec.ComputeRatioExported(values[i], prev)
-				if class != codec.ClassNormal {
+				if class != codec.ClassNormal16 {
 					prev = values[i]
 					continue
 				}
@@ -987,7 +953,7 @@ func TestAdaptiveV7OffsetSavings(t *testing.T) {
 			prev := values[0]
 			for i := 1; i < len(values); i++ {
 				ratio, class := codec.ComputeRatioExported(values[i], prev)
-				if class != codec.ClassNormal {
+				if class != codec.ClassNormal16 {
 					prev = values[i]
 					continue
 				}

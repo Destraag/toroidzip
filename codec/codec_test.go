@@ -192,41 +192,6 @@ func TestSigFigsEndToEndGuarantee(t *testing.T) {
 	}
 }
 
-// TestDecodeV4Legacy verifies that the legacy v4 adaptive stream decoder
-// (decodeV4 / decodeRans6) can still decode streams produced by old encoder
-// builds. The fixture was generated with gatherRans6 before that encoder
-// function was removed in M8/8a.
-//
-// Input values: [1.0, 1.01, 1.02, 1.03, 0.5, 2.0]
-// Encoded with: bits=16, tol=1e-4, DriftReanchor, reanchorInterval=256
-func TestDecodeV4Legacy(t *testing.T) {
-	v4Fixture := []byte{
-		0x54, 0x5a, 0x52, 0x5a, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x10, 0x01, 0x00, 0x00, 0x00, 0xfb, 0x0f, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0xfd,
-		0xbb, 0xc8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, 0x75,
-		0x80, 0x74, 0x80, 0x73, 0x80, 0xa2, 0x5e, 0x00, 0xc0,
-	}
-	want := []float64{1.0, 1.01, 1.02, 1.03, 0.5, 2.0}
-	const tol = 1e-3 // slightly relaxed — per-ratio ε=1e-4 each
-
-	got, err := codec.Decode(bytes.NewReader(v4Fixture))
-	if err != nil {
-		t.Fatalf("Decode v4 legacy fixture: %v", err)
-	}
-	if len(got) != len(want) {
-		t.Fatalf("length: got %d want %d", len(got), len(want))
-	}
-	for i, w := range want {
-		if w == 0 {
-			continue
-		}
-		if math.Abs(got[i]-w)/math.Abs(w) > tol {
-			t.Errorf("[%d] got %v want %v", i, got[i], w)
-		}
-	}
-}
-
 // TestAdaptiveV5DriftCompensate verifies that v5 adaptive encoding with
 // DriftCompensate (Mode B) round-trips within the stated tolerance.
 func TestAdaptiveV5DriftCompensate(t *testing.T) {
@@ -283,7 +248,7 @@ func TestDecodeV5Errors(t *testing.T) {
 }
 
 // TestDriftModesAllEncoders verifies DriftCompensate and DriftQuantize
-// round-trips for lossless, quantized, and raw encoders.
+// round-trips for quantized encoder.
 func TestDriftModesAllEncoders(t *testing.T) {
 	values := make([]float64, 300)
 	v := 50.0
@@ -297,14 +262,8 @@ func TestDriftModesAllEncoders(t *testing.T) {
 		opts codec.EncodeOptions
 		tol  float64
 	}{
-		{"Lossless/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate}, 1e-12},
-		// DriftQuantize float32-rounds every ratio before encoding (intentionally lossy).
-		// Over 300 steps the accumulated float32 error is ~float32_eps × n ≈ 3e-5.
-		{"Lossless/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftQuantize}, 1e-4},
 		{"Quantized/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 16, DriftMode: codec.DriftCompensate}, 1e-3},
 		{"Quantized/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 16, DriftMode: codec.DriftQuantize}, 1e-3},
-		{"Raw/Compensate", codec.EncodeOptions{EntropyMode: codec.EntropyRaw, DriftMode: codec.DriftCompensate}, 1e-12},
-		{"Raw/Quantize", codec.EncodeOptions{EntropyMode: codec.EntropyRaw, DriftMode: codec.DriftQuantize}, 1e-4},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -340,7 +299,7 @@ func TestRoundTripSmooth(t *testing.T) {
 		v *= 1.0 + (rand.Float64()-0.5)*0.01 // ±0.5% change per step
 		values[i] = v
 	}
-	got := roundTrip(t, values, codec.EncodeOptions{})
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, Tolerance: 0})
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch: got %d want %d", len(got), len(values))
 	}
@@ -362,7 +321,7 @@ func TestRoundTripWithReanchor(t *testing.T) {
 		v *= 1.001
 		values[i] = v
 	}
-	got := roundTrip(t, values, codec.EncodeOptions{ReanchorInterval: 64}) // aggressive re-anchor for test
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, Tolerance: 0, ReanchorInterval: 64})
 	for i, want := range values {
 		if math.Abs(got[i]-want) > math.Abs(want)*1e-10 {
 			t.Errorf("index %d: got %v want %v", i, got[i], want)
@@ -373,7 +332,7 @@ func TestRoundTripWithReanchor(t *testing.T) {
 // TestRoundTripWithZero verifies boundary-zero events are handled correctly.
 func TestRoundTripWithZero(t *testing.T) {
 	values := []float64{1.0, 2.0, 0.0, 3.0, 4.0}
-	got := roundTrip(t, values, codec.EncodeOptions{})
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, Tolerance: 0})
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch")
 	}
@@ -401,7 +360,7 @@ func TestDriftModeCompensate(t *testing.T) {
 		v *= 1.0003
 		values[i] = v
 	}
-	opts := codec.EncodeOptions{DriftMode: codec.DriftCompensate, ReanchorInterval: 10000}
+	opts := codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, DriftMode: codec.DriftCompensate, ReanchorInterval: 10000}
 	got := roundTrip(t, values, opts)
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch")
@@ -453,8 +412,8 @@ func TestClassify(t *testing.T) {
 		{"large negative", -2e15, codec.ClassBoundaryInf},
 		{"identity", 1.0, codec.ClassIdentity},
 		{"identity epsilon edge", 1.0 + 5e-10, codec.ClassIdentity},
-		{"normal", 1.5, codec.ClassNormal},
-		{"negative normal", -1.5, codec.ClassNormal},
+		{"normal", 1.5, codec.ClassNormal16},
+		{"negative normal", -1.5, codec.ClassNormal16},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -500,27 +459,6 @@ func TestDecodeErrors(t *testing.T) {
 		}
 	})
 
-	// Truncated v2 stream: encode lossless then truncate at various points.
-	t.Run("truncated v2 header", func(t *testing.T) {
-		var buf bytes.Buffer
-		if err := codec.Encode([]float64{1.0, 2.0, 3.0}, &buf, codec.EncodeOptions{
-			EntropyMode: codec.EntropyLossless,
-		}); err != nil {
-			t.Fatalf("encode: %v", err)
-		}
-		data := buf.Bytes()
-		// Try decoding truncated at several points into the header (past magic+version).
-		for _, cutAt := range []int{6, 8, 12} {
-			if cutAt >= len(data) {
-				continue
-			}
-			_, err := codec.Decode(bytes.NewReader(data[:cutAt]))
-			if err == nil {
-				t.Errorf("expected error decoding v2 truncated at byte %d", cutAt)
-			}
-		}
-	})
-
 	// Truncated v3 stream.
 	t.Run("truncated v3 header", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -560,7 +498,7 @@ func TestKahanProdZeroAnchor(t *testing.T) {
 	// A sequence starting at zero triggers the zero-anchor path in newKahanProd.
 	// After the zero, a boundary-zero event fires and resets the anchor to the next value.
 	values := []float64{0.0, 5.0, 10.0, 20.0}
-	opts := codec.EncodeOptions{DriftMode: codec.DriftCompensate}
+	opts := codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, DriftMode: codec.DriftCompensate}
 	got := roundTrip(t, values, opts)
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch: got %d want %d", len(got), len(values))
@@ -583,7 +521,7 @@ func TestKahanProdZeroAnchor(t *testing.T) {
 func TestRoundTripBoundaryInf(t *testing.T) {
 	// Jump from 1.0 to 1e16 triggers ClassBoundaryInf.
 	values := []float64{1.0, 1e16, 2e16, 3e16}
-	got := roundTrip(t, values, codec.EncodeOptions{})
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16})
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch")
 	}
@@ -602,7 +540,7 @@ func TestRoundTripNearZeroPrev(t *testing.T) {
 	// would overflow to ClassBoundaryInf without the threshold check, storing 5e300
 	// instead of 5.0.
 	values := []float64{1.0, 1e-301, 5.0, 10.0}
-	got := roundTrip(t, values, codec.EncodeOptions{})
+	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16})
 	if len(got) != len(values) {
 		t.Fatalf("length mismatch")
 	}
@@ -610,101 +548,6 @@ func TestRoundTripNearZeroPrev(t *testing.T) {
 		if got[i] != want {
 			t.Errorf("index %d: got %v want %v", i, got[i], want)
 		}
-	}
-}
-
-// --- Version 2 (EntropyLossless) round-trip tests ---
-
-// TestRoundTripLosslessSmooth verifies v2 near-lossless reconstruction of smooth data.
-// ClassIdentity events are reconstructed as ratio=1.0 (within IdentityEpsilon per step).
-func TestRoundTripLosslessSmooth(t *testing.T) {
-	values := make([]float64, 1000)
-	v := 100.0
-	for i := range values {
-		v *= 1.001
-		values[i] = v
-	}
-	// Tight reanchor interval so ClassIdentity error stays bounded.
-	opts := codec.EncodeOptions{EntropyMode: codec.EntropyLossless, ReanchorInterval: 64}
-	got := roundTrip(t, values, opts)
-	if len(got) != len(values) {
-		t.Fatalf("length mismatch")
-	}
-	for i, want := range values {
-		// Reanchors are exact. Between anchors ClassIdentity may accumulate
-		// up to reanchorInterval * IdentityEpsilon (~64e-9) relative error.
-		if math.Abs(got[i]-want) > math.Abs(want)*1e-6 {
-			t.Errorf("index %d: got %v want %v (diff %e)", i, got[i], want, got[i]-want)
-		}
-	}
-}
-
-// TestRoundTripLosslessSingleValue exercises the single-element edge case.
-func TestRoundTripLosslessSingleValue(t *testing.T) {
-	values := []float64{3.14159}
-	got := roundTrip(t, values, codec.EncodeOptions{EntropyMode: codec.EntropyLossless})
-	if len(got) != 1 || got[0] != 3.14159 {
-		t.Errorf("got %v want [3.14159]", got)
-	}
-}
-
-// TestRoundTripLosslessBoundary verifies boundary and reanchor events are
-// stored verbatim (exact) in lossless mode.
-func TestRoundTripLosslessBoundary(t *testing.T) {
-	values := []float64{1.0, 2.0, 0.0, 3.0, 1e16, 4.0}
-	opts := codec.EncodeOptions{EntropyMode: codec.EntropyLossless}
-	got := roundTrip(t, values, opts)
-	if len(got) != len(values) {
-		t.Fatalf("length mismatch")
-	}
-	// 0.0 and 1e16 trigger boundary events — must be exact.
-	for i, want := range values {
-		if want == 0 || want == 1e16 {
-			if got[i] != want {
-				t.Errorf("boundary index %d: got %v want %v", i, got[i], want)
-			}
-		}
-	}
-}
-
-// TestRoundTripLosslessDriftCompensate verifies v2+DriftCompensate stays tight.
-func TestRoundTripLosslessDriftCompensate(t *testing.T) {
-	values := make([]float64, 2000)
-	v := 1.0
-	for i := range values {
-		v *= 1.0005
-		values[i] = v
-	}
-	opts := codec.EncodeOptions{
-		EntropyMode: codec.EntropyLossless,
-		DriftMode:   codec.DriftCompensate,
-	}
-	got := roundTrip(t, values, opts)
-	for i, want := range values {
-		if math.Abs(got[i]-want) > math.Abs(want)*1e-6 {
-			t.Errorf("index %d: got %v want %v (diff %e)", i, got[i], want, got[i]-want)
-		}
-	}
-}
-
-// TestLosslessStreamSmaller verifies v2 produces a shorter byte stream than v1
-// for smooth data (where most ratios are ClassIdentity).
-func TestLosslessStreamSmaller(t *testing.T) {
-	values := make([]float64, 10000)
-	v := 100.0
-	for i := range values {
-		v *= 1.0 + (rand.Float64()-0.5)*1e-10 // nearly constant → most ClassIdentity
-		values[i] = v
-	}
-	var v1Buf, v2Buf bytes.Buffer
-	if err := codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
-		t.Fatal(err)
-	}
-	if err := codec.Encode(values, &v2Buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
-		t.Fatal(err)
-	}
-	if v2Buf.Len() >= v1Buf.Len() {
-		t.Errorf("lossless stream (%d bytes) not smaller than raw (%d bytes)", v2Buf.Len(), v1Buf.Len())
 	}
 }
 
@@ -762,26 +605,6 @@ func TestRoundTripQuantizedPrecisions(t *testing.T) {
 
 	if err14 >= err4 {
 		t.Errorf("higher precision should give less error: err4=%e err14=%e", err4, err14)
-	}
-}
-
-// TestQuantizedStreamSmaller verifies v3 (low precision) is smaller than v1.
-func TestQuantizedStreamSmaller(t *testing.T) {
-	values := make([]float64, 5000)
-	v := 1.0
-	for i := range values {
-		v *= 1.001
-		values[i] = v
-	}
-	var v1Buf, v3Buf bytes.Buffer
-	if err := codec.Encode(values, &v1Buf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
-		t.Fatalf("encode raw: %v", err)
-	}
-	if err := codec.Encode(values, &v3Buf, codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8}); err != nil {
-		t.Fatalf("encode quantized: %v", err)
-	}
-	if v3Buf.Len() >= v1Buf.Len() {
-		t.Errorf("quantized stream (%d bytes) not smaller than raw (%d bytes)", v3Buf.Len(), v1Buf.Len())
 	}
 }
 
@@ -856,8 +679,8 @@ func maxRelErr(got, want []float64) float64 {
 // --- EntropyAdaptive (v4) tests ---
 
 // TestAdaptiveRoundTripTolerance0 verifies that EntropyAdaptive with Tolerance=0
-// (lossless-equivalent) reconstructs values with at most the same small drift
-// as EntropyLossless. All ClassNormal ratios take the ClassNormalExact path.
+// reconstructs values with minimal drift. All ClassNormal ratios take the
+// ClassNormalExact path.
 func TestAdaptiveRoundTripTolerance0(t *testing.T) {
 	values := makeSmoothSeries(1000, 100.0, 1.001)
 	var buf bytes.Buffer
@@ -903,30 +726,6 @@ func TestAdaptiveRoundTripLossyTolerance(t *testing.T) {
 	// Max error should be bounded by the quantization tolerance plus drift.
 	if e := maxRelErr(got, values); e > 0.05 {
 		t.Errorf("max relative error %e unexpectedly large for tolerance=%g", e, tol)
-	}
-}
-
-// TestAdaptiveSmallerThanQuantizedAtHighTolerance checks that adaptive at a
-// high tolerance (many quantized hits) produces a smaller or equal stream than
-// plain lossless, demonstrating compression benefit.
-func TestAdaptiveSmallerThanQuantizedAtHighTolerance(t *testing.T) {
-	values := makeSmoothSeries(5000, 50.0, 1.0002)
-	var losslessBuf, adaptiveBuf bytes.Buffer
-	if err := codec.Encode(values, &losslessBuf, codec.EncodeOptions{
-		EntropyMode: codec.EntropyLossless,
-	}); err != nil {
-		t.Fatalf("lossless encode: %v", err)
-	}
-	if err := codec.Encode(values, &adaptiveBuf, codec.EncodeOptions{
-		EntropyMode:   codec.EntropyAdaptive,
-		PrecisionBits: 16,
-		Tolerance:     1e-2, // 1% tolerance → most normals should be quantized
-	}); err != nil {
-		t.Fatalf("adaptive encode: %v", err)
-	}
-	if adaptiveBuf.Len() >= losslessBuf.Len() {
-		t.Errorf("adaptive (%d bytes) not smaller than lossless (%d bytes) at 1%% tolerance",
-			adaptiveBuf.Len(), losslessBuf.Len())
 	}
 }
 
@@ -1210,32 +1009,5 @@ func TestAdaptiveV5TiersUsed(t *testing.T) {
 	// Higher precision → smaller error.
 	if e16, e30 := maxRelErr(got16, values), maxRelErr(got30, values); e30 >= e16 {
 		t.Errorf("B=30 error %e not smaller than B=16 error %e", e30, e16)
-	}
-}
-
-// TestAdaptiveV5BackwardCompatV4 confirms that v4-encoded streams are still
-// decodable after v5/v6 were introduced.
-func TestAdaptiveV5BackwardCompatV4(t *testing.T) {
-	// We no longer produce v4 streams from encodeAdaptive, so we manually
-	// exercise decodeV4 by encoding via the internal path and checking the
-	// public Decode still routes correctly. Re-use the existing adaptive tests
-	// as a proxy — they all encode with v6 now; the key test here is that
-	// the version-4 constant still produces a valid decodable stream.
-	// We confirm the stream is now v6 by checking round-trip correctness.
-	values := makeSmoothSeries(200, 10.0, 1.002)
-	var buf bytes.Buffer
-	if err := codec.Encode(values, &buf, codec.EncodeOptions{
-		EntropyMode:   codec.EntropyAdaptive,
-		PrecisionBits: 12,
-		Tolerance:     1e-3,
-	}); err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	got, err := codec.Decode(&buf)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got) != len(values) {
-		t.Fatalf("len mismatch: got %d want %d", len(got), len(values))
 	}
 }

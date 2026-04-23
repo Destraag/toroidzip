@@ -12,3 +12,4 @@ coverage.out
 # Benchmark temp data
 bench_data/
 cover.out
+test_output.txt

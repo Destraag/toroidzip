@@ -200,40 +200,40 @@ func makeFloat32PrecisionSmooth(n int) []float64 {
 
 func TestDatasetSensorStream(t *testing.T) {
 	testDatasetRoundTrip(t, "SensorStream", makeSensorStream(2000),
-		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9, DriftMode: codec.DriftCompensate},
 		1e-6)
 }
 
 func TestDatasetFinancialWalk(t *testing.T) {
 	testDatasetRoundTrip(t, "FinancialWalk", makeFinancialWalk(2000),
-		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9, DriftMode: codec.DriftCompensate},
 		1e-6)
 }
 
 func TestDatasetScientificMultiScale(t *testing.T) {
 	testDatasetRoundTrip(t, "ScientificMultiScale", makeScientificMultiScale(2000),
-		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9, DriftMode: codec.DriftCompensate},
 		1e-6)
 }
 
 func TestDatasetVolatileSeries(t *testing.T) {
 	testDatasetRoundTrip(t, "VolatileSeries", makeVolatileSeries(2000),
-		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9, DriftMode: codec.DriftCompensate},
 		1e-6)
 }
 
 func TestDatasetNearConstant(t *testing.T) {
 	testDatasetRoundTrip(t, "NearConstant", makeNearConstant(2000),
-		codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate},
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9, DriftMode: codec.DriftCompensate},
 		1e-6)
 }
 
 func TestDatasetNeuralWeightProxy(t *testing.T) {
-	// Weights change sign → many boundary events; use raw mode to verify
-	// round-trip is exact rather than checking relative error across zeros.
+	// Weights change sign → many boundary events; verify round-trip produces
+	// finite values rather than checking relative error across zeros.
 	values := makeNeuralWeightProxy(2000)
 	var buf bytes.Buffer
-	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-9}); err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 	got, err := codec.Decode(&buf)
@@ -282,22 +282,24 @@ func testDatasetRoundTrip(t *testing.T, name string, values []float64,
 }
 
 // ─── Compression ratio smoke tests ──────────────────────────────────────────
-// Verify each dataset actually compresses vs raw float64 in lossless mode.
+// Verify each dataset actually compresses vs uncompressed float64.
 
 func TestCompressionRatioSensorStream(t *testing.T) {
-	testCompressionVsRaw(t, "SensorStream", makeSensorStream(5000), codec.EntropyLossless)
+	testCompressionVsRaw(t, "SensorStream", makeSensorStream(5000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-4})
 }
 
 func TestCompressionRatioNearConstant(t *testing.T) {
-	testCompressionVsRaw(t, "NearConstant", makeNearConstant(5000), codec.EntropyLossless)
+	testCompressionVsRaw(t, "NearConstant", makeNearConstant(5000),
+		codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-4})
 }
 
 func TestCompressionRatioFinancial(t *testing.T) {
-	// Financial data has high entropy — lossless may not compress vs raw.
+	// Financial data has high entropy — adaptive may not compress vs uncompressed.
 	// Just verify encode+decode work; do not assert smaller.
 	values := makeFinancialWalk(5000)
 	var buf bytes.Buffer
-	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyLossless}); err != nil {
+	if err := codec.Encode(values, &buf, codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-4}); err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
 	if _, err := codec.Decode(&buf); err != nil {
@@ -305,24 +307,22 @@ func TestCompressionRatioFinancial(t *testing.T) {
 	}
 }
 
-func testCompressionVsRaw(t *testing.T, name string, values []float64, em codec.EntropyMode) {
+func testCompressionVsRaw(t *testing.T, name string, values []float64, opts codec.EncodeOptions) {
 	t.Helper()
-	var rawBuf, encBuf bytes.Buffer
-	if err := codec.Encode(values, &rawBuf, codec.EncodeOptions{EntropyMode: codec.EntropyRaw}); err != nil {
-		t.Fatalf("%s raw encode: %v", name, err)
-	}
-	if err := codec.Encode(values, &encBuf, codec.EncodeOptions{EntropyMode: em}); err != nil {
+	rawBytes := len(values) * 8
+	var encBuf bytes.Buffer
+	if err := codec.Encode(values, &encBuf, opts); err != nil {
 		t.Fatalf("%s enc encode: %v", name, err)
 	}
-	if encBuf.Len() >= rawBuf.Len() {
-		t.Errorf("%s: entropy-coded (%d B) not smaller than raw (%d B)",
-			name, encBuf.Len(), rawBuf.Len())
+	if encBuf.Len() >= rawBytes {
+		t.Errorf("%s: entropy-coded (%d B) not smaller than uncompressed (%d B)",
+			name, encBuf.Len(), rawBytes)
 	}
 }
 
 // ─── Benchmarks ─────────────────────────────────────────────────────────────
 
-// BenchmarkDataClass runs all six data classes × three entropy modes so M3
+// BenchmarkDataClass runs all six data classes × two entropy modes so M3
 // can be seeded with Go benchmark output before external codec comparisons.
 func BenchmarkDataClass(b *testing.B) {
 	const n = 100_000
@@ -341,9 +341,8 @@ func BenchmarkDataClass(b *testing.B) {
 		name string
 		opts codec.EncodeOptions
 	}{
-		{"Raw", codec.EncodeOptions{EntropyMode: codec.EntropyRaw}},
-		{"Lossless", codec.EncodeOptions{EntropyMode: codec.EntropyLossless, DriftMode: codec.DriftCompensate}},
 		{"Quantized8b", codec.EncodeOptions{EntropyMode: codec.EntropyQuantized, PrecisionBits: 8, DriftMode: codec.DriftCompensate}},
+		{"Adaptive16b", codec.EncodeOptions{EntropyMode: codec.EntropyAdaptive, PrecisionBits: 16, Tolerance: 1e-4, DriftMode: codec.DriftCompensate}},
 	}
 
 	for _, ds := range datasets {

@@ -119,7 +119,7 @@ GLOSSARY
     The payload byte-width allocated to a quantised ratio based on its signed
     offset magnitude. The four tiers are:
       u8  (ClassNormal8):  |offset| ≤ 127        → 1 byte
-      u16 (ClassNormal):   |offset| ≤ 32,767     → 2 bytes
+      u16 (ClassNormal16): |offset| ≤ 32,767     → 2 bytes
       u24 (ClassNormal24): |offset| ≤ 8,388,607  → 3 bytes
       u32 (ClassNormal32): |offset| ≤ 536,870,912 → 4 bytes
     The tier a ratio lands in depends on both PrecisionBits and the ratio's
@@ -141,7 +141,7 @@ GLOSSARY
     The rANS alphabet symbol assigned to each value in the stream. The
     current (v7/v8) alphabet has 9 symbols:
       ClassIdentity, ClassBoundaryZero, ClassBoundaryInf, ClassReanchor,
-      ClassNormal8, ClassNormal (u16), ClassNormal24, ClassNormal32,
+      ClassNormal8, ClassNormal16 (u16), ClassNormal24, ClassNormal32,
       ClassNormalExact
     Do NOT confuse "class" with an object-oriented programming class.
 
@@ -562,7 +562,7 @@ GLOSSARY
   The tier system allocates only as many bytes as the offset actually needs:
 
       |offset| ≤ 127         → 1 byte  (int8,  ClassNormal8)
-      |offset| ≤ 32,767      → 2 bytes (int16, ClassNormal)
+      |offset| ≤ 32,767      → 2 bytes (int16, ClassNormal16)
       |offset| ≤ 8,388,607   → 3 bytes (int24, ClassNormal24)
       |offset| ≤ 536,870,911 → 4 bytes (int32, ClassNormal32)
 
@@ -680,10 +680,13 @@ GLOSSARY
     - 9-symbol alphabet shared with QuantizedV2
 
   Each stream version is decodeable via the version byte in the header; the
-  decoder dispatches on this byte and handles all formats produced during
-  development. The encoder only produces the current format (stream byte 8,
-  AdaptiveV7, or byte 7, QuantizedV2). No backward compatibility guarantee
-  is made to external users — none exist at this stage of the project.
+  decoder dispatches on this byte. Stream versions 7 (QuantizedV2) and 8
+  (AdaptiveV7) are currently produced and decoded. Versions 1–6 are
+  documented here for historical reference only — the decoder returns an
+  "unsupported version" error for those bytes. The encoder only produces
+  stream byte 7 (QuantizedV2) or byte 8 (AdaptiveV7). No backward
+  compatibility guarantee is made to external users — none exist at this
+  stage of the project.
 
 
 3.5  Precision-Relative Tiers
@@ -744,7 +747,7 @@ GLOSSARY
   assigned by the iota sequence in boundary.go:
 
       0  ClassIdentity      no payload
-      1  ClassNormal        signed offset payload (size depends on version)
+      1  ClassNormal16      signed offset payload (size depends on version)
       2  ClassBoundaryZero  float64 payload (8 bytes)
       3  ClassBoundaryInf   float64 payload (8 bytes)
       4  ClassReanchor      float64 payload (8 bytes)
@@ -757,13 +760,11 @@ GLOSSARY
   which rANS variant is used (RansFreqs5 for v1–v3, RansFreqs6 for v4,
   RansFreqs7 for v5–v6, RansFreqs9 for v7–v8).
 
-  ClassNormal naming note: ClassNormal retains its original name from v1,
-  where it carried a full float64 ratio payload (not 16 bits). In v2 it
-  also carries float64. In v3 the payload width varies with B (uint8,
-  uint16, uint24, or uint32). From v4 onward ClassNormal is always 2 bytes
-  wide; the interpretation changes from absolute index (v4/v5) to signed
-  offset (v6+). Versions v1–v3 are decode-supported but not produced by
-  the current encoder.
+  ClassNormal16 naming note: The symbol was renamed ClassNormal → ClassNormal16 in M16
+  (v1.0.0) to reflect that it carries a 16-bit (int16) signed offset payload in the
+  current v7/v8 streams. Historically (v1–v5) it carried float64 or absolute-index
+  payloads of varying width; from v6 onward the payload is always int16 signed offset.
+  Stream versions v1–v6 are no longer decoded (return unsupported version error).
 
 
 4.2  Version 1 — Raw (EntropyRaw)
@@ -785,6 +786,7 @@ GLOSSARY
 
   No entropy coding. Every value costs exactly 9 bytes (1 class + 8 float64).
   Used as uncompressed baseline.
+  Decode no longer supported — returns unsupported version error.
 
 
 4.3  Version 2 — Lossless (EntropyLossless)
@@ -805,13 +807,14 @@ GLOSSARY
       [anchor: float64 (8 bytes)]
       [payloads: concatenated per-class payloads in forward order]
           ClassIdentity:     no payload
-          ClassNormal:       float64 ratio (8 bytes)
+          ClassNormal16:     float64 ratio (8 bytes)
           ClassBoundaryZero: float64 value (8 bytes)
           ClassBoundaryInf:  float64 value (8 bytes)
           ClassReanchor:     float64 value (8 bytes)
 
   5-symbol rANS alphabet. ClassIdentity costs ~log₂(1/p) bits in the class
   stream; all other classes cost 8 bytes payload.
+  Decode no longer supported — returns unsupported version error.
 
 
 4.4  Version 3 — Quantized (EntropyQuantized)
@@ -828,14 +831,15 @@ GLOSSARY
           19    20  ransFreqs (5 × uint32 LE)
 
   Body: same structure as v2.
-  ClassNormal payload:
+  ClassNormal16 payload:
       B ≤ 8:  uint8  (1 byte) — absolute quantisation index
       B ≤ 16: uint16 LE (2 bytes) — absolute quantisation index
       B ≤ 24: uint24 LE (3 bytes) — absolute quantisation index
       else:   uint32 LE (4 bytes) — absolute quantisation index
 
   Absolute index (not signed offset). No tier routing beyond payload width.
-  No ClassNormalExact. Every ClassNormal ratio is quantised at B bits.
+  No ClassNormalExact. Every ClassNormal16 ratio is quantised at B bits.
+  Decode no longer supported — returns unsupported version error.
 
 
 4.5  Version 4 — Adaptive (EntropyAdaptive, superseded)
@@ -852,12 +856,12 @@ GLOSSARY
           19    24  ransFreqs6 (6 × uint32 LE)
 
   Body: same rANS body structure.
-  ClassNormal payload: uint16 LE (2 bytes) — absolute index, B capped at 16
+  ClassNormal16 payload: uint16 LE (2 bytes) — absolute index, B capped at 16
   ClassNormalExact payload: float64 (8 bytes) — verbatim ratio
   ClassNormal32: not present in v4.
 
   Per-ratio ε check (not end-to-end). Superseded by v5.
-  Decode supported; encode no longer produced.
+  Decode no longer supported — returns unsupported version error.
 
 
 4.6  Version 5 — Adaptive V5 (7-symbol, superseded)
@@ -874,12 +878,12 @@ GLOSSARY
           19    28  ransFreqs7 (7 × uint32 LE)
 
   Body: same rANS body structure.
-  ClassNormal payload:    uint16 LE (2 bytes) — absolute index, B capped at 16
+  ClassNormal16 payload:  uint16 LE (2 bytes) — absolute index, B capped at 16
   ClassNormal32 payload:  uint32 LE (4 bytes) — absolute index, always 30-bit
   ClassNormalExact payload: float64 (8 bytes)
 
   Absolute index (not signed offset). PrecisionBits clamped to 16 for
-  ClassNormal tier. Superseded by v6/v7. Decode supported; encode no longer produced.
+  ClassNormal16 tier. Superseded by v6/v7. Decode no longer supported — returns unsupported version error.
 
 
 4.7  Version 6 — Adaptive V6 (signed offset, superseded)
@@ -896,12 +900,12 @@ GLOSSARY
           19    28  ransFreqs7 (7 × uint32 LE)
 
   Body: same rANS body structure.
-  ClassNormal payload:    int16 LE (2 bytes) — signed offset from 30-bit centre
+  ClassNormal16 payload:  int16 LE (2 bytes) — signed offset from 30-bit centre
   ClassNormal32 payload:  int32 LE (4 bytes) — signed offset from 30-bit centre
   ClassNormalExact payload: float64 (8 bytes)
 
   Signed offset; 30-bit precision fixed regardless of precisionBits field.
-  PrecisionBits ignored by encoder. Decode supported; encode no longer produced.
+  PrecisionBits ignored by encoder. Decode no longer supported — returns unsupported version error.
 
 
 4.8  Version 7 — QuantizedV2 (9-symbol offset tiers, current quantized)
@@ -919,12 +923,12 @@ GLOSSARY
 
   Body: same rANS body structure.
   ClassNormal8  payload: int8   (1 byte)  — signed offset, |offset| ≤ 127
-  ClassNormal   payload: int16 LE (2 bytes) — signed offset, |offset| ≤ 32,767
+  ClassNormal16 payload: int16 LE (2 bytes) — signed offset, |offset| ≤ 32,767
   ClassNormal24 payload: int24 LE (3 bytes, little-endian signed)
   ClassNormal32 payload: int32 LE (4 bytes) — signed offset
 
   All offsets: offset = Q(r, B) - 2^(B-1). Dequantise: Q⁻¹(offset + 2^(B-1), B).
-  No ClassNormalExact (quantized mode: every ClassNormal ratio is quantised).
+  No ClassNormalExact (quantized mode: every ClassNormal16 ratio is quantised).
   PrecisionBits respected; tier selected by |offset| magnitude.
   Current encoder output for EntropyQuantized.
 
@@ -944,7 +948,7 @@ GLOSSARY
 
   Body: same rANS body structure.
   ClassNormal8  payload: int8   (1 byte)
-  ClassNormal   payload: int16 LE (2 bytes)
+  ClassNormal16 payload: int16 LE (2 bytes)
   ClassNormal24 payload: int24 LE (3 bytes)
   ClassNormal32 payload: int32 LE (4 bytes)
   ClassNormalExact payload: float64 (8 bytes) — verbatim ratio

@@ -127,7 +127,7 @@ func simulateDrift(values []float64, mode DriftMode, interval int) DriftRow {
 		}
 
 		ratio, class := computeRatio(values[i], prev)
-		if class != ClassNormal {
+		if class != ClassNormal16 {
 			// Boundary or identity — no drift error contribution.
 			if class != ClassIdentity {
 				prev = values[i]
@@ -200,7 +200,7 @@ func ExtractNormalRatios(values []float64, driftMode DriftMode, reanchorInterval
 		}
 		ratio, class := computeRatio(values[i], prev)
 		switch class {
-		case ClassNormal:
+		case ClassNormal16:
 			out = append(out, ratio)
 			if driftMode == DriftCompensate {
 				prev = kp.multiply(ratio)

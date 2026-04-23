@@ -51,8 +51,8 @@ func runEncode(args []string) error {
 		"safety cap on verbatim anchor cadence; 0 = derive from --sig-figs or use default (256)")
 	driftModeStr := fs.String("drift-mode", "A",
 		"error-management strategy: A=reanchor (default), B=compensate, C=quantize")
-	entropyModeStr := fs.String("entropy-mode", "lossless",
-		"entropy mode: raw, lossless (default), quantized, or adaptive")
+	entropyModeStr := fs.String("entropy-mode", "quantized",
+		"entropy mode: quantized (default) or adaptive")
 	sigFigs := fs.Int("sig-figs", 0,
 		"guarantee N significant figures end-to-end in reconstructed values (1-9);\n"+
 			"\timplies --entropy-mode adaptive with adaptive reanchoring")
@@ -63,7 +63,7 @@ func runEncode(args []string) error {
 	precBits := fs.Int("precision", 0,
 		"precision bits (1-30 for adaptive or quantized); cannot combine with --sig-figs")
 	tolerance := fs.Float64("tolerance", 0.0,
-		"max relative quantization error for adaptive mode (0=lossless-equivalent, e.g. 1e-4)")
+		"max relative quantization error for adaptive mode (e.g. 1e-4 for ~4 sig figs)")
 	auto := fs.Bool("auto", false,
 		"auto-select encoding parameters from data analysis")
 	fs.BoolVar(auto, "a", false, "shorthand for --auto")
@@ -137,16 +137,12 @@ func runEncode(args []string) error {
 
 	var entropyMode codec.EntropyMode
 	switch strings.ToLower(*entropyModeStr) {
-	case "raw":
-		entropyMode = codec.EntropyRaw
-	case "lossless":
-		entropyMode = codec.EntropyLossless
 	case "quantized":
 		entropyMode = codec.EntropyQuantized
 	case "adaptive":
 		entropyMode = codec.EntropyAdaptive
 	default:
-		return fmt.Errorf("--entropy-mode must be raw, lossless, quantized, or adaptive (got %q)", *entropyModeStr)
+		return fmt.Errorf("--entropy-mode must be quantized or adaptive (got %q)", *entropyModeStr)
 	}
 
 	// Apply default reanchor interval now that we know it wasn't explicitly set.
@@ -232,7 +228,7 @@ func runEncode(args []string) error {
 				*tolerance = 1e-4 // sensible default for --auto --lossy
 			}
 		} else {
-			entropyMode = codec.EntropyLossless
+			entropyMode = codec.EntropyQuantized
 		}
 		fmt.Printf("auto: drift-mode=%v reanchor-interval=%d entropy-mode=%v precision-bits=%d tolerance=%g\n",
 			driftMode, *reanchorInterval, entropyMode, precisionBits, *tolerance)
@@ -310,14 +306,9 @@ func runAnalyze(args []string) error {
 		fmt.Printf("  %4d  %.4f\n", b, precRpt.Entropy[b])
 	}
 
-	// Lossless viability warning based on identity fraction.
+	// Identity fraction info.
 	fmt.Printf("\n  identity fraction : %.2f%% of ratios within IdentityEpsilon (%.0e)\n",
 		precRpt.IdentityFraction*100, codec.IdentityEpsilon)
-	if precRpt.IdentityFraction < 0.05 {
-		fmt.Printf("  WARNING: lossless mode will barely compress this data (<5%% identity events).\n")
-		fmt.Printf("           Consider --entropy-mode quantized --sig-figs %d instead.\n",
-			precRpt.RecommendedSigFigs)
-	}
 
 	// Drift analysis.
 	intervals := []int{64, 128, 256, 512}
@@ -489,8 +480,8 @@ Usage:
   toroidzip analyze [flags] <input.f64>
 
 Encode flags:
-  --entropy-mode raw|lossless|quantized|adaptive
-                          entropy mode (default lossless)
+  --entropy-mode quantized|adaptive
+                          entropy mode (default quantized)
   --drift-mode A|B|C      error-management strategy (default A)
                           A = reanchor: periodic verbatim anchors (default, ~3x faster)
                           B = compensate: Kahan log-space (identical output to A)
@@ -499,12 +490,12 @@ Encode flags:
   --sig-figs N / -n N     guarantee N significant figures end-to-end (1-9);
                           implies adaptive mode with adaptive reanchoring;
                           prints selected tier to stderr
-  --bytes 1|2|4           select storage tier by byte width (1=u8/~2sf,
-                          2=u16/~4sf, 4=u32/~9sf); implies adaptive mode;
+  --bytes 1|2|3|4         select storage tier by byte width (1=u8/~2sf,
+                          2=u16/~4sf, 3=u24/~7sf, 4=u32/~9sf); implies adaptive mode;
                           cannot combine with --sig-figs
   --precision B           precision bits; 1-30 for quantized, 1-16 for adaptive
   --tolerance T           max relative quantisation error for adaptive mode
-                          (0 = lossless-equivalent; e.g. 1e-4 for ~4 sig figs)
+                          (e.g. 1e-4 for ~4 sig figs)
                           only valid with --entropy-mode adaptive
   --auto / -a             auto-select parameters from data analysis
   --lossy                 with --auto: use adaptive encoding at recommended

@@ -11,9 +11,9 @@ const (
 	// shortest codeword when entropy coding is added.
 	ClassIdentity RatioClass = iota
 
-	// ClassNormal is a well-behaved ratio outside the identity band but within
+	// ClassNormal16 is a well-behaved ratio outside the identity band but within
 	// normal floating-point range. Arithmetic is valid and reversible.
-	ClassNormal
+	ClassNormal16
 
 	// ClassBoundaryZero indicates the previous value was zero or near-zero,
 	// making the ratio undefined or extreme. The current value is stored
@@ -37,7 +37,7 @@ const (
 	// Used in the EntropyAdaptive stream (v4+). Not produced by Classify.
 	ClassNormalExact
 
-	// ClassNormal32 signals a ClassNormal ratio stored as a signed int32 offset
+	// ClassNormal32 signals a ClassNormal16 ratio stored as a signed int32 offset
 	// from log-space centre at configured precision. |offset| > 8,388,607.
 	// Payload: 4 bytes (int32, little-endian). Decoded via DequantizeRatioOffset(off, bits).
 	// Used in EntropyAdaptive v5 (absolute uint32) and v6/v7 (signed offset).
@@ -45,13 +45,13 @@ const (
 	ClassNormal32
 
 	// ClassNormal8 is used in the v4-quantized and v7-adaptive offset streams.
-	// It signals a ClassNormal ratio stored as a signed int8 offset from the
+	// It signals a ClassNormal16 ratio stored as a signed int8 offset from the
 	// log-space centre at configured precision. |offset| ≤ 127.
 	// Payload: 1 byte (int8). Decoded via DequantizeRatioOffset(off, bits).
 	ClassNormal8
 
 	// ClassNormal24 is used in the v4-quantized and v7-adaptive offset streams.
-	// It signals a ClassNormal ratio stored as a signed int24 offset from the
+	// It signals a ClassNormal16 ratio stored as a signed int24 offset from the
 	// log-space centre at configured precision. |offset| ≤ 8,388,607.
 	// Payload: 3 bytes (int24, little-endian signed). Decoded via DequantizeRatioOffset(off, bits).
 	ClassNormal24
@@ -96,28 +96,19 @@ const DefaultDriftMode = DriftReanchor
 type EntropyMode byte
 
 const (
-	// EntropyRaw is the Milestone 1 baseline: no entropy coding, one class byte
-	// plus a full float64 per value regardless of class.
-	EntropyRaw EntropyMode = iota
-
-	// EntropyLossless compresses the class byte stream with rANS and omits the
-	// float64 payload for ClassIdentity events (decoder reconstructs as ratio=1.0).
-	// Provides large reductions on smooth data. Near-lossless: ClassIdentity
-	// events introduce at most IdentityEpsilon relative error, bounded by reanchors.
-	EntropyLossless
-
-	// EntropyQuantized is explicitly lossy: ClassNormal ratios are mapped to
+	// EntropyQuantized is explicitly lossy: ClassNormal16 ratios are mapped to
 	// N-bit log-space symbols (see PrecisionBits / DefaultPrecisionBits) and
-	// stored as uint16 instead of float64. The class stream is rANS-coded.
-	// Use AnalyzePrecision to find the recommended precision for a data set.
-	EntropyQuantized
+	// stored as signed offsets in the smallest fitting payload tier (u8/u16/u24/u32).
+	// The class stream is rANS-coded. Use AnalyzePrecision to find the recommended
+	// precision for a data set.
+	EntropyQuantized EntropyMode = iota
 
-	// EntropyAdaptive is the current adaptive stream (v7). Each ClassNormal ratio
+	// EntropyAdaptive is the current adaptive stream (v8). Each ClassNormal16 ratio
 	// is quantized at EncodeOptions.PrecisionBits (default: DefaultPrecisionBits=16)
 	// using signed log-space offsets, then stored in the smallest payload tier
 	// that fits the offset magnitude:
 	//   - |offset| ≤ 127       → ClassNormal8  + int8  (1 byte)
-	//   - |offset| ≤ 32,767    → ClassNormal   + int16 (2 bytes)
+	//   - |offset| ≤ 32,767    → ClassNormal16 + int16 (2 bytes)
 	//   - |offset| ≤ 8,388,607 → ClassNormal24 + int24 (3 bytes)
 	//   - |offset| > 8,388,607 → ClassNormal32 + int32 (4 bytes)
 	//   - ratio == 0 or tol check fails → ClassNormalExact + float64 (8 bytes)
@@ -150,7 +141,7 @@ func Classify(ratio float64) RatioClass {
 	if math.Abs(ratio) > BoundaryInfThreshold {
 		return ClassBoundaryInf
 	}
-	return ClassNormal
+	return ClassNormal16
 }
 
 // IsBoundary returns true if the class represents a boundary event (not a normal ratio).
