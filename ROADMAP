@@ -548,6 +548,17 @@ tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
   M16 COMPLETE — 102 tests passing; 87.9% coverage; build, vet, staticcheck clean;
   v1–v6 legacy encoders removed; ClassNormal renamed ClassNormal16; v1.0.0 tagged
 
+### Milestone 17 — Parallel Encoding + Dynamic Offset (NEXT)
+
+- [ ] 17a-i:   Segmenter goroutine (lightweight boundary-detection pass)
+- [ ] 17a-ii:  Worker pool + assembler; --parallel N flag (default 1)
+- [ ] 17a-iii: Throughput benchmarks confirming near-linear scaling
+- [ ] 17b-i:   v9 stream format design (per-segment dynamic offset k_center)
+- [ ] 17b-ii:  Dynamic offset encoder (weighted median + optional full sweep)
+- [ ] 17b-iii: AnalyzeTiers reports dynamic offset savings per dataset
+- [ ] 17b-iv:  Compression benchmarks across all M3 dataset classes
+- [ ] 17c:     Full gate + tag v1.1.0
+
 ---
 
 ## CLI reference
