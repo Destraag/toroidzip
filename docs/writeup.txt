@@ -1,6 +1,6 @@
 ToroidZip — Algorithm Writeup
 ============================================================
-Status: DRAFT — M14 in progress. Not yet published.
+Status: DRAFT — updated through M17 / v1.1.0. Not yet published.
 Scope:  The applied algorithm as implemented. The broader Toroidal
         Arithmetic theoretical framework is treated in a separate document.
         See notes/ for the theoretical development.
@@ -957,13 +957,57 @@ GLOSSARY
   ClassNormalExact is emitted when the per-ratio tolerance check fails (i.e.
   fastPath did not fire and ε_max(B) ≥ ε for this specific ratio).
   PrecisionBits respected; offsets computed at configured B.
-  Current encoder output for EntropyAdaptive.
+  Superseded by version 9 for new streams (v8 decode remains supported).
 
 
-4.10  rANS Body Layout
+4.10  Version 9 — AdaptiveV8 (10-symbol, dynamic offset, current adaptive)
+─────────────────────────────────────────────────────────────────────
+
+  Added in M17 (v1.1.0). Extends v8 with dynamic quantisation offset and a
+  10th rANS symbol class (ClassReanchorDynamic).
+
+  Header (59 bytes):
+      offset  size  field
+           0     4  magic ('T','Z','R','Z')
+           4     1  version = 9
+           5     1  driftMode
+           6     4  reanchorInterval (uint32 LE)
+          10     8  count (uint64 LE)
+          18     1  precisionBits (B)
+          19    40  ransFreqs10 (10 × uint32 LE)
+
+  Body: same rANS body structure (see 4.11).
+  ClassNormal8  payload: int8   (1 byte)  — signed offset from dynamic centre
+  ClassNormal16 payload: int16 LE (2 bytes)
+  ClassNormal24 payload: int24 LE (3 bytes)
+  ClassNormal32 payload: int32 LE (4 bytes)
+  ClassNormalExact payload: float64 (8 bytes) — verbatim ratio
+  ClassReanchorDynamic payload: float64 (8 bytes) anchor + int32 LE (4 bytes)
+    qOffset — the segment's per-segment quantisation centre offset from the
+    symmetric midpoint 2^(B-1). Enables the encoder to shift the quantisation
+    grid to better cover a drifting ratio distribution without changing B.
+
+  Dynamic offset semantics:
+    Each segment may carry a ClassReanchorDynamic event that stores a
+    signed integer offset (qOffset). For that segment, all ClassNormal*
+    offsets are relative to (2^(B-1) + qOffset) instead of the symmetric
+    midpoint. The offset is chosen per-segment using OptimalKCenter (O(n log n)
+    via sort + binary search) to minimise the maximum tier-promotion cost.
+    When dynamicOffset = false, qOffset is always 0 and behaviour is
+    identical to v8.
+
+  ClassReanchorDynamic vs ClassReanchor:
+    ClassReanchor (symbol 4) remains in the alphabet. A plain reanchor (no
+    offset change) continues to emit ClassReanchor. ClassReanchorDynamic is
+    only emitted when an offset change is beneficial (DynOffsetCost < baseline).
+
+  Current encoder output for EntropyAdaptive with DynamicOffset=true.
+
+
+4.11  rANS Body Layout
 ───────────────────────
 
-  The rANS body is the same structure for all versions v2–v8:
+  The rANS body is the same structure for all versions v2–v9:
 
       [ransLen: uint32 LE]        — byte count of the compressed class stream
       [rANS stream: ransLen bytes] — class symbols entropy-coded in reverse,
@@ -1337,15 +1381,36 @@ GLOSSARY
   These results were gathered under the M4 benchmark harness (bench_m4.sh),
   using the v7 stream encoder (QuantizedV2, stream byte 7) for quantized
   modes and an intermediate build of AdaptiveV7 for adaptive modes. The
-  current production encoder is stream v8 (AdaptiveV7, M13). Quantized mode
+  current production encoder is stream v9 (AdaptiveV8, M17). Quantized mode
   results are expected to be stable across versions (the format and algorithm
   have not changed since M4). Adaptive mode results from this harness reflect
   an intermediate implementation and should be treated as indicative only;
-  a fresh run of bench_m4.sh against the current v8 encoder is planned before
+  a fresh run of bench_m4.sh against the current v9 encoder is planned before
   publication.
 
   All adaptive mode numbers in this section are labelled "M4" to make this
   distinction explicit.
+
+  M17 (v1.1.0) results — parallel encoding and dynamic offset:
+
+    Parallel encoding (EncodeParallel, N=4 workers, Ryzen 7 2700X 8-core):
+      Sensor data   encode: ~3x throughput vs single-core (linear scaling achieved)
+      Scientific    encode: ~3x throughput vs single-core
+      Other types:  parallel overhead dominates at N≤100k values; use N=4
+                    for streams ≥100k values per segment.
+      Parallelism=0 (serial) remains default for all existing Options structs.
+
+    Dynamic offset (DynamicOffset=true, v9 stream):
+      Drift dataset at 4 sig figs: −1.7% bytes vs equivalent v8 stream.
+      Sensor / Scientific (centred distributions): < 0.1% overhead.
+      Dynamic offset is off by default; opt in via Options.DynamicOffset = true.
+
+    DriftMode comparison (all measured with AdaptiveV8, 4 sig figs):
+      Mode A (DriftReanchor):   baseline; reanchor on tolerance breach
+      Mode B (DriftCompensate): ~1.4x smaller on strongly-drifting data;
+                                negligible difference on stationary data
+      Mode C (DriftQuantize):   bit-exact float32 decoder interop; use
+                                only when decoder is known float32
 
 
 7.1  Setup
