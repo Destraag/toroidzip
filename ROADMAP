@@ -4,7 +4,7 @@ Scope: PUBLIC — milestone tracker and intent. Committed to git.
         Implementation detail, design rationale, and session notes live
         in PLAN (gitignored, internal only).
 
-## Status: Milestone 16 complete
+## Status: Milestone 17 complete — v1.1.0
 
 ---
 
@@ -550,14 +550,30 @@ tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
 
 ### Milestone 17 — Parallel Encoding + Dynamic Offset (NEXT)
 
-- [ ] 17a-i:   Segmenter goroutine (lightweight boundary-detection pass)
-- [ ] 17a-ii:  Worker pool + assembler; --parallel N flag (default 1)
-- [ ] 17a-iii: Throughput benchmarks confirming near-linear scaling
-- [ ] 17b-i:   v9 stream format design (per-segment dynamic offset k_center)
-- [ ] 17b-ii:  Dynamic offset encoder (weighted median + optional full sweep)
-- [ ] 17b-iii: AnalyzeTiers reports dynamic offset savings per dataset
-- [ ] 17b-iv:  Compression benchmarks across all M3 dataset classes
-- [ ] 17c:     Full gate + tag v1.1.0
+- [x] 17a-i:   Segmenter goroutine (periodic boundary detection, O(1) per value)
+- [x] 17a-ii:  Worker pool + assembler; --parallel N flag (default 1 = byte-identical
+               to v1.0.0); serial fallback for DynamicOffset+AdaptiveReanchor
+- [x] 17a-iii: Throughput benchmarks — v7 3× parallel scaling confirmed on 8-core
+               (Sensor/Scientific 3.0×, Financial/Drift 1.2–1.4×)
+- [x] 17b-i:   v9 stream format — ClassReanchorDynamic; 10-symbol rANS alphabet;
+               59-byte header; per-segment k_center (int32 LE after anchor float64)
+- [x] 17b-ii:  Dynamic offset encoder: OptimalKCenter O(n log n); DynOffsetCost;
+               dynOffsetThreshold=4; gatherRans7v8 + gatherRans7v8Segment;
+               encodeAdaptiveV8 + decodeV8/decodeRans7v8
+- [x] 17b-iii: AnalyzeDynamicOffset + DynamicOffsetReport (TotalSegments,
+               BenefitSegments, AvgEffectiveSegLen, AvgQOffsetMagnitude,
+               MinSigFigsForBenefit, ShortSegmentWarning); analyze subcommand
+               prints dynamic offset preview section
+- [x] 17c:     Full gate — vet/staticcheck clean; all tests pass; benchmark
+               smoke check no regressions; v1.1.0 tagged
+
+  Key benchmark findings (Ryzen 7 2700X):
+    v7 parallel: Sensor 56→172 MB/s (3.0×), Drift 190→255 MB/s (1.4×)
+    v9 serial fallback by design (DynamicOffset+AdaptiveReanchor)
+    DriftMode throughput: A≈C, B ~1.4× slower; all three modes kept
+    Dynamic offset size gain: negligible on centred data; −1.7% on Drift
+
+  M17 COMPLETE — all tests passing; build/vet/staticcheck clean; v1.1.0 tagged
 
 ---
 
@@ -572,8 +588,10 @@ tier breakdowns that did not match what the v8 encoder actually produces. Fixed.
     --precision N      precision bits 1–30 (implies adaptive)
     --auto             auto-select mode from data analysis
     --lossy            shorthand for --entropy-mode adaptive
-    --drift-mode A|B   A=reanchor (default), B=Kahan compensate
+    --drift-mode A|B|C A=reanchor (default), B=Kahan compensate, C=float32 mirror
     --reanchor-interval N  (default 256)
+    --parallel N       goroutines: 1=default (byte-identical to v1.0.0), 0=NumCPU
+    --dynamic-offset   per-segment k_center optimisation (v9 stream)
 
 ---
 
@@ -647,26 +665,6 @@ validates the 1D design. Candidate for a separate package or v2 module.
 
 ### Benchmark-gated — only proceed if a benchmark first shows measurable gain
 
-### 24-bit payload tier  [effort: M — retest after M11]
-A 24-bit tier was investigated via TestU24Savings (n=50,000, all 7 dataset
-classes, sf=5/6/7). Result: 0% savings on every smooth dataset including
-a dedicated Float32PrecisionSmooth class. 3% savings on NeuralWeight.
-
-Root cause: the current absolute-index encoding places ratio=1.0 at index
-2^29. All smooth-data u32 payloads cluster near centre (~530M), far above
-the 2^24 threshold. A 24-bit tier in the current scheme only fires on
-extreme downward ratio moves (ratio < ~0.067), which are boundary events,
-not precision events.
-
-Do not build in current form. Retest after M11 (signed-offset v6 stream):
-with centre at 0, smooth-data u32 payloads become small signed integers.
-Out-of-range offsets (extreme events) may then fall in a range where a
-24-bit tier is meaningfully smaller than u32. TestU24Savings step 11c
-will measure this directly.
-
-If 11c shows >10% of remaining u32 payloads fit in 24 bits on any smooth
-dataset, revisit this entry.
-
 ### Delta coding of quantized index stream  [effort: L]
 Before rANS, encode the delta between adjacent class symbols rather than
 the raw symbols. For smooth data Δ≈0 dominates, giving a more skewed
@@ -682,11 +680,3 @@ entropy than the global one. Header grows by one table per context.
 Meaningful gain only when class transitions are structured.
 Gate on: entropy analysis showing per-context entropy materially lower
 than global entropy on target datasets.
-
-### v6 — Predictive-residual lossless stream  [effort: L]
-A predictor (last ratio or linear extrapolation) + entropy-coded residual
-could achieve genuinely lossless compression better than v2's ~1.0 ratio.
-Key risk: ratios are already a first-difference transform on values; a
-second differencing layer may yield little in practice.
-Gate on: prototype residual coder showing lossless ratio < 0.90 on
-Smooth/Sensor dataset (current lossless is ~1.0007 — near-zero gain).

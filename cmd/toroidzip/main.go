@@ -61,7 +61,8 @@ func runEncode(args []string) error {
 		"storage tier by byte width: 1=u8 (~2 sf), 2=u16 (~4 sf), 4=u32 (~9 sf);\n"+
 			"\timplies --entropy-mode adaptive; cannot combine with --sig-figs")
 	precBits := fs.Int("precision", 0,
-		"precision bits (1-30 for adaptive or quantized); cannot combine with --sig-figs")
+		"precision bits (1-30 for adaptive or quantized); cannot combine with --sig-figs\n"+
+			"\t23 bits matches the float32 mantissa (~7 sig figs); use for float32-origin data")
 	tolerance := fs.Float64("tolerance", 0.0,
 		"max relative quantization error for adaptive mode (e.g. 1e-4 for ~4 sig figs)")
 	auto := fs.Bool("auto", false,
@@ -69,6 +70,12 @@ func runEncode(args []string) error {
 	fs.BoolVar(auto, "a", false, "shorthand for --auto")
 	lossy := fs.Bool("lossy", false,
 		"with --auto: use adaptive encoding at recommended precision and tolerance 1e-4")
+	parallel := fs.Int("parallel", 1,
+		"number of parallel encoding goroutines (default 1 = single-threaded, identical to v1.0.0;\n"+
+			"\t0 = use all CPUs; N > 1 = use N goroutines; requires --drift-mode A/reanchor)")
+	dynamicOffset := fs.Bool("dynamic-offset", false,
+		"enable per-segment k_center optimisation (v9 stream); reduces payload for drifting/bimodal data;\n"+
+			"\tonly applies to --entropy-mode adaptive; cannot combine with --parallel > 1")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -248,6 +255,8 @@ func runEncode(args []string) error {
 		Tolerance:         *tolerance,
 		AdaptiveReanchor:  adaptiveReanchor,
 		EndToEndTolerance: endToEndTolerance,
+		Parallelism:       *parallel,
+		DynamicOffset:     *dynamicOffset,
 	}
 	if err := codec.Encode(values, out, opts); err != nil {
 		return fmt.Errorf("encoding: %w", err)
@@ -391,6 +400,31 @@ func runAnalyze(args []string) error {
 			fmt.Printf("  u32  (4 B)  : %6d  (%5.1f%%)\n", row.U32, pU32)
 			fmt.Printf("  f64  (8 B)  : %6d  (%5.1f%%)\n", row.F64, pF64)
 			fmt.Printf("  eff bytes/ratio: %.2f  (lossless=8.00)\n", row.EffectiveBytesPerRatio())
+		}
+
+		// Dynamic offset savings preview.
+		dynOpts := codec.EncodeOptions{
+			EntropyMode:       codec.EntropyAdaptive,
+			PrecisionBits:     bits,
+			Tolerance:         tol,
+			ReanchorInterval:  codec.DefaultReanchorInterval,
+			AdaptiveReanchor:  endToEndTol > 0,
+			EndToEndTolerance: endToEndTol,
+		}
+		dynRpt := codec.AnalyzeDynamicOffset(values, dynOpts)
+		if dynRpt.TotalSegments > 0 {
+			fmt.Printf("\n=== Dynamic Offset Preview (--dynamic-offset) ===\n")
+			fmt.Printf("  segments analysed  : %d\n", dynRpt.TotalSegments)
+			fmt.Printf("  segments benefiting: %d  (%.0f%%)\n",
+				dynRpt.BenefitSegments, dynRpt.BenefitFraction()*100)
+			fmt.Printf("  default payload    : %d B\n", dynRpt.DefaultPayloadBytes)
+			fmt.Printf("  optimal payload    : %d B\n", dynRpt.OptimalPayloadBytes)
+			if dynRpt.SavedBytes() > 0 {
+				fmt.Printf("  estimated saving   : %d B  (%.1f%% of normal-ratio payload)\n",
+					dynRpt.SavedBytes(), dynRpt.PayloadReduction()*100)
+			} else {
+				fmt.Printf("  estimated saving   : none (dynamic offset would not help this data)\n")
+			}
 		}
 	}
 

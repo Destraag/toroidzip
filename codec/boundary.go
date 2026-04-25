@@ -55,6 +55,15 @@ const (
 	// log-space centre at configured precision. |offset| ≤ 8,388,607.
 	// Payload: 3 bytes (int24, little-endian signed). Decoded via DequantizeRatioOffset(off, bits).
 	ClassNormal24
+
+	// ClassReanchorDynamic is used in v9 (EntropyAdaptive with dynamic offset).
+	// Like ClassReanchor, but the anchor payload is followed by a 4-byte int32
+	// k_center (absolute quantized symbol index). The per-ratio offsets in this
+	// segment are encoded relative to k_center rather than the default centre
+	// (2^(bits-1)). Reconstruction is identical — k_center only affects which
+	// payload tier (u8/u16/u24/u32) each offset falls into.
+	// Payload: float64 anchor (8 bytes) + int32 k_center (4 bytes, LE).
+	ClassReanchorDynamic
 )
 
 // Thresholds for boundary classification. These are tunable.
@@ -84,8 +93,11 @@ const (
 	// Near-lossless — reduces drift without increasing file size.
 	DriftCompensate
 
-	// DriftQuantize is mode C: ratios rounded to float32 precision before storage.
-	// Explicitly lossy. Produces more compressible ratio distributions.
+	// DriftQuantize is mode C: the encoder rounds each ratio to float32 precision
+	// before updating prev, mirroring what a float32 decoder would accumulate.
+	// Use when the decoder is known to use float32 arithmetic — this eliminates
+	// systematic divergence between the float64 encoder and float32 decoder.
+	// Not a performance mode; --auto never recommends it.
 	DriftQuantize
 )
 

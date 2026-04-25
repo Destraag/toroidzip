@@ -465,3 +465,244 @@ func BenchmarkAdaptiveDecode(b *testing.B) {
 		_, _ = codec.Decode(bytes.NewReader(encData))
 	}
 }
+
+// ─── DriftMode comparison benchmark (17c-iv) ─────────────────────────────────
+//
+// BenchmarkDriftMode compares all three drift modes (Reanchor/Compensate/Quantize)
+// across two configurations:
+//
+//	WithAdaptiveReanchor: AdaptiveReanchor=true, EndToEndTolerance=SigFigsToTolerance(4).
+//	  Under adaptive reanchor the end-to-end error check dominates both modes;
+//	  all three fire reanchors at the same points → identical output sizes.
+//	  The benchmark isolates the per-mode overhead above the shared baseline.
+//
+//	WithoutAdaptiveReanchor: periodic-only reanchor at interval 256.
+//	  Here drift mode IS orthogonal to compression: Compensate drifts less
+//	  between anchors than Reanchor, so it fires fewer reanchors and produces
+//	  a smaller stream. Quantize uses float32-rounded ratios (lossy; sizes differ).
+//	  This configuration shows the original design intent of each mode.
+//
+// A size check is printed for the WithAdaptiveReanchor case to confirm identical
+// output; sizes are expected to differ in the WithoutAdaptiveReanchor case.
+//
+// Run with:
+//
+//	go test ./codec/... -bench=BenchmarkDriftMode -benchtime=3s
+func BenchmarkDriftMode(b *testing.B) {
+	const dataSize = 100_000
+
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(dataSize)},
+		{"Financial", makeFinancialWalk(dataSize)},
+		{"Drift", makeDriftStream(dataSize)},
+		{"NearConstant", makeNearConstant(dataSize)},
+	}
+
+	modes := []struct {
+		name string
+		mode codec.DriftMode
+	}{
+		{"Reanchor", codec.DriftReanchor},
+		{"Compensate", codec.DriftCompensate},
+		{"Quantize", codec.DriftQuantize},
+	}
+
+	configs := []struct {
+		tag              string
+		adaptive         bool
+		endToEndTol      float64
+		reanchorInterval int
+	}{
+		{"WithAdaptiveReanchor", true, codec.SigFigsToTolerance(4), 0},
+		{"WithoutAdaptiveReanchor", false, 0, 256},
+	}
+
+	for _, cfg := range configs {
+		cfg := cfg
+		for _, ds := range datasets {
+			ds := ds
+
+			// Size comparison across modes for this config.
+			sizes := make(map[string]int, len(modes))
+			for _, m := range modes {
+				opts := codec.EncodeOptions{
+					EntropyMode:       codec.EntropyAdaptive,
+					PrecisionBits:     16,
+					Tolerance:         math.MaxFloat64,
+					DriftMode:         m.mode,
+					AdaptiveReanchor:  cfg.adaptive,
+					EndToEndTolerance: cfg.endToEndTol,
+					ReanchorInterval:  cfg.reanchorInterval,
+				}
+				var buf bytes.Buffer
+				if err := codec.Encode(ds.data, &buf, opts); err != nil {
+					b.Fatalf("%s/%s/%s: encode: %v", cfg.tag, ds.name, m.name, err)
+				}
+				sizes[m.name] = buf.Len()
+			}
+			if cfg.adaptive {
+				// Expect identical sizes when adaptive reanchor dominates.
+				ra, co, qu := sizes["Reanchor"], sizes["Compensate"], sizes["Quantize"]
+				if ra != co || ra != qu {
+					b.Logf("SIZE DIFFER %s/%s: Reanchor=%d Compensate=%d Quantize=%d",
+						cfg.tag, ds.name, ra, co, qu)
+				}
+			} else {
+				// Sizes differ by design; log them for the record.
+				b.Logf("sizes %s/%s: Reanchor=%d Compensate=%d Quantize=%d",
+					cfg.tag, ds.name,
+					sizes["Reanchor"], sizes["Compensate"], sizes["Quantize"])
+			}
+
+			for _, m := range modes {
+				m := m
+				name := cfg.tag + "/" + ds.name + "/" + m.name
+				b.Run(name, func(b *testing.B) {
+					opts := codec.EncodeOptions{
+						EntropyMode:       codec.EntropyAdaptive,
+						PrecisionBits:     16,
+						Tolerance:         math.MaxFloat64,
+						DriftMode:         m.mode,
+						AdaptiveReanchor:  cfg.adaptive,
+						EndToEndTolerance: cfg.endToEndTol,
+						ReanchorInterval:  cfg.reanchorInterval,
+					}
+					b.SetBytes(int64(dataSize) * 8)
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						var buf bytes.Buffer
+						if err := codec.Encode(ds.data, &buf, opts); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// ─── v7 vs v9 comparison benchmarks ─────────────────────────────────────────
+//
+// BenchmarkV7vsV9 compares encode throughput and compressed size between
+// v7 (EntropyAdaptive, DynamicOffset=false) and v9 (DynamicOffset=true)
+// across all M3 dataset classes and two parallelism levels (N=1, N=4).
+//
+// Run with:
+//
+//	go test ./codec/... -bench=BenchmarkV7vsV9 -benchtime=3s -benchmem
+//
+// The sub-benchmark names encode: DataClass/Mode/N=workers
+// Mode is one of: v7, v9
+
+func BenchmarkV7vsV9(b *testing.B) {
+	const dataSize = 100_000
+
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(dataSize)},
+		{"Financial", makeFinancialWalk(dataSize)},
+		{"Scientific", makeScientificMultiScale(dataSize)},
+		{"Volatile", makeVolatileSeries(dataSize)},
+		{"NearConstant", makeNearConstant(dataSize)},
+		{"Drift", makeDriftStream(dataSize)},
+	}
+
+	// Realistic production config: mirrors --sig-figs 4 (CLI --auto default).
+	// Tolerance=MaxFloat64 lets precision bits drive per-ratio accuracy (fast path);
+	// AdaptiveReanchor + EndToEndTolerance give the end-to-end guarantee.
+	// This puts v7 and v9 on equal footing — both pay ratio-computation cost in
+	// the segmenter, so parallel scaling numbers are comparable.
+	baseOpts := codec.EncodeOptions{
+		EntropyMode:       codec.EntropyAdaptive,
+		PrecisionBits:     16,
+		Tolerance:         math.MaxFloat64,
+		AdaptiveReanchor:  true,
+		EndToEndTolerance: codec.SigFigsToTolerance(4), // 5e-5
+	}
+
+	for _, ds := range datasets {
+		ds := ds
+		for _, dynOffset := range []bool{false, true} {
+			dynOffset := dynOffset
+			version := "v7"
+			if dynOffset {
+				version = "v9"
+			}
+			for _, n := range []int{1, 4} {
+				n := n
+				name := ds.name + "/" + version + "/N=" + itoa(n)
+				b.Run(name, func(b *testing.B) {
+					opts := baseOpts
+					opts.DynamicOffset = dynOffset
+					opts.Parallelism = n
+					b.SetBytes(int64(dataSize) * 8)
+					b.ResetTimer()
+					for i := 0; i < b.N; i++ {
+						var buf bytes.Buffer
+						if err := codec.Encode(ds.data, &buf, opts); err != nil {
+							b.Fatal(err)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+// BenchmarkV7vsV9Size reports encoded byte sizes (not throughput) by running
+// each configuration once and using b.ReportMetric. This makes size comparisons
+// visible in the benchmark table alongside throughput.
+//
+// Run with:
+//
+//	go test ./codec/... -bench=BenchmarkV7vsV9Size -benchtime=1x
+func BenchmarkV7vsV9Size(b *testing.B) {
+	const dataSize = 100_000
+
+	datasets := []struct {
+		name string
+		data []float64
+	}{
+		{"Sensor", makeSensorStream(dataSize)},
+		{"Financial", makeFinancialWalk(dataSize)},
+		{"Scientific", makeScientificMultiScale(dataSize)},
+		{"Volatile", makeVolatileSeries(dataSize)},
+		{"NearConstant", makeNearConstant(dataSize)},
+		{"Drift", makeDriftStream(dataSize)},
+	}
+
+	baseOpts := codec.EncodeOptions{
+		EntropyMode:       codec.EntropyAdaptive,
+		PrecisionBits:     16,
+		Tolerance:         math.MaxFloat64,
+		AdaptiveReanchor:  true,
+		EndToEndTolerance: codec.SigFigsToTolerance(4), // 5e-5 — matches --sig-figs 4
+	}
+
+	for _, ds := range datasets {
+		ds := ds
+		for _, dynOffset := range []bool{false, true} {
+			dynOffset := dynOffset
+			version := "v7"
+			if dynOffset {
+				version = "v9"
+			}
+			name := ds.name + "/" + version
+			b.Run(name, func(b *testing.B) {
+				opts := baseOpts
+				opts.DynamicOffset = dynOffset
+				var buf bytes.Buffer
+				if err := codec.Encode(ds.data, &buf, opts); err != nil {
+					b.Fatal(err)
+				}
+				b.ReportMetric(float64(buf.Len()), "B/stream")
+				b.ReportMetric(float64(buf.Len())/float64(dataSize*8)*100, "pct_of_raw")
+			})
+		}
+	}
+}

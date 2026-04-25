@@ -302,3 +302,76 @@ func QuantPayloadTier(bits int) int {
 		return 4
 	}
 }
+
+// DynOffsetCost returns the total payload bytes needed to encode all quantized
+// symbols qs using k_center as the offset origin.
+// Cost is purely the per-ratio tier bytes; the cost of storing k_center itself
+// is not included (the caller accounts for that separately).
+func DynOffsetCost(qs []int32, kCenter int32) int {
+	total := 0
+	for _, q := range qs {
+		d := q - kCenter
+		if d < 0 {
+			d = -d
+		}
+		switch {
+		case d <= 127:
+			total += 1
+		case d <= 32767:
+			total += 2
+		case d <= 8388607:
+			total += 3
+		default:
+			total += 4
+		}
+	}
+	return total
+}
+
+// OptimalKCenter returns the absolute quantized center (in [0, 2^bits)) that
+// minimises DynOffsetCost across all symbols in qs.
+//
+// Derivation: total_cost = 4n − cnt(127) − cnt(32767) − cnt(8388607)
+// where cnt(r) = number of elements within radius r of the center.
+// Minimising cost is equivalent to maximising cnt(127)+cnt(32767)+cnt(8388607).
+// Each cnt(r) is computed via binary search on a sorted copy: O(log n) per
+// candidate, O(n log n) total — vs the previous O(n²) sweep.
+//
+// Returns the default centre (1<<(bits-1)) when qs is empty.
+func OptimalKCenter(qs []int32, bits int) int32 {
+	defaultCenter := int32(1) << (bits - 1)
+	if len(qs) == 0 {
+		return defaultCenter
+	}
+
+	// Sort a working copy to enable O(log n) range counting.
+	sorted := make([]int32, len(qs))
+	copy(sorted, qs)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	n := len(sorted)
+
+	// countWithin returns the count of sorted elements in [c−r, c+r].
+	// Uses int64 arithmetic to avoid overflow on extreme c values.
+	countWithin := func(c int32, r int64) int {
+		lo := int64(c) - r
+		hi := int64(c) + r
+		left := sort.Search(n, func(i int) bool { return int64(sorted[i]) >= lo })
+		right := sort.Search(n, func(i int) bool { return int64(sorted[i]) > hi })
+		return right - left
+	}
+
+	// score = cnt(127) + cnt(32767) + cnt(8388607); higher is better.
+	score := func(c int32) int {
+		return countWithin(c, 127) + countWithin(c, 32767) + countWithin(c, 8388607)
+	}
+
+	best := defaultCenter
+	bestScore := score(best)
+	for _, c := range sorted {
+		if s := score(c); s > bestScore {
+			bestScore = s
+			best = c
+		}
+	}
+	return best
+}

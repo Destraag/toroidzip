@@ -13,8 +13,9 @@ Theoretical basis: Toroidal Arithmetic — a ratio-first number system where 0
 and ∞ are boundary poles rather than algebraic values, and identity (x/x=1)
 is treated as a higher-order law than value equality.
 
-Status: Milestone 16 complete — legacy cleanup (v1–v6 removed); ClassNormal16 rename;
-v1.0.0 published; 102 passing tests, 87.9% coverage.
+Status: Milestone 17 complete — parallel encoding (--parallel N); v9 stream with
+per-segment dynamic offset (--dynamic-offset); AnalyzeDynamicOffset; v1.1.0 published;
+all tests passing, build/vet/staticcheck clean.
 
 Usage
 -----
@@ -145,6 +146,9 @@ Library API
     PrecisionBits     Log-space quantisation depth (1–30).
                       Use codec.SigFigsToBits(N) to derive from a sig-figs target.
                       Example: SigFigsToBits(5) = 16.
+                      PrecisionBits=23 matches the float32 mantissa (equiv. ~7 sig figs;
+                      SigFigsToBits(7)=23); use for data that originated as float32 for
+                      a lossless float32-precision round-trip.
 
     Tolerance         Fast-path gate. Set math.MaxFloat64 when using SigFigsToBits
                       as the accuracy driver (recommended). Set SigFigsToTolerance(N)
@@ -159,10 +163,32 @@ Library API
 
     DriftMode         DriftReanchor (A, default, fastest) | DriftCompensate (B) |
                       DriftQuantize (C, mirrors float32 decoder accumulation).
-                      DriftCompensate uses Kahan log-space accumulation; ~3.4× slower
-                      but strictly more accurate at the same reanchor interval.
-                      DriftQuantize (C) is retained for compatibility; --auto never
-                      recommends it.
+
+                      When to use each mode:
+
+                      A (DriftReanchor): use this in almost all cases. It is the
+                        fastest and, when AdaptiveReanchor=true, the end-to-end
+                        sig-figs guarantee makes the drift mode choice irrelevant
+                        to output accuracy — the adaptive check enforces the bound
+                        regardless of how prev accumulates.
+
+                      B (DriftCompensate): Kahan log-space accumulation tracks
+                        accumulated error more precisely than A. ~1.4× slower
+                        (measured; was ~3.4× before M11/M12 added per-ratio tier
+                        routing which raised the shared baseline cost). Use B when
+                        AdaptiveReanchor is disabled and the reanchor interval is
+                        very long (>1000 values) — the Kahan accuracy then matters
+                        because there is no safety net. With AdaptiveReanchor active,
+                        A and B produce identical output; prefer A.
+
+                      C (DriftQuantize): rounds each ratio to float32 before updating
+                        prev, mirroring what a float32 decoder would compute. Use C
+                        when the decoder is known to use float32 arithmetic — it
+                        eliminates systematic divergence between float64 encoder and
+                        float32 decoder. --auto never recommends it; it is a niche
+                        interoperability mode. With AdaptiveReanchor active the
+                        end-to-end check still catches any excursion, so the sig-figs
+                        guarantee holds regardless of the float32 rounding.
 
     ReanchorInterval  Safety cap on reanchor cadence. With AdaptiveReanchor=true this
                       is a maximum: reanchors may fire earlier. Default 256; use
